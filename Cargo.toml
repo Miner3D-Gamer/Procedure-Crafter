@@ -1,0 +1,33 @@
+[package]
+name = "procedure_crafter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+minifb = "0.28.0"
+mirl = "0.1.5"
+imgui = "0.12.0"
+#imgui-opengl-renderer = "0.12.1"
+gl = "0.14"
+rand = "0.9.0"
+fontdue = "0.7"
+once_cell = "1.19"
+
+# allow overflows
+[profile.release]
+overflow-checks = false
+opt-level = 3         # Maximize optimizations for performance
+lto = "fat"            # Enable Link Time Optimization for better performance
+panic = "abort"        # Avoid extra code related to unwinding
+debug = false          # Disable debug info for faster compilation
+codegen-units = 1      # Reduces the number of code generation units, improving optimizations
+rpath = true           # Optimize dynamic linking (for faster loading)
+
+[profile.dev]
+overflow-checks = false
+
+[profile.test]
+overflow-checks = false
+
+[profile.bench]
+overflow-checks = false
