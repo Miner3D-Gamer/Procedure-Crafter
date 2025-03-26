@@ -1,6 +1,11 @@
+#![allow(dead_code)]
+
 use core::panic;
 use minifb::{Icon, Window, WindowOptions};
 use mirl::graphics::rgb_to_u32;
+
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 use std::{cell::Cell, str::FromStr};
 // Cell: Make attribute mutable while keeping the rest of the struct static
 
@@ -25,7 +30,7 @@ struct Block {
     output: String,
     inputs: Vec<BlockInput>,
     block_color_id: usize,
-    id: u32,
+    id: usize,
 }
 struct BlockInput {
     input_type: String,
@@ -34,14 +39,10 @@ struct BlockInput {
     expected_return: Option<Vec<String>>,
 }
 
-use fontdue::{Font, FontSettings};
+use fontdue::Font;
+mod file_system;
 
-fn load_font(path: &str) -> Font {
-    let font_data = std::fs::read(path).expect("Failed to read font file");
-    Font::from_bytes(font_data, FontSettings::default())
-        .expect("Failed to parse font")
-}
-
+// Drawing
 fn draw_text(
     buffer: &mut Vec<u32>,
     width: &usize,
@@ -213,6 +214,56 @@ fn render_block(
     );
 }
 
+fn render_ghost_block(
+    buffer: &mut Vec<u32>,
+    width: &usize,
+    height: &usize,
+    camera: &Camera,
+    blocks: &Vec<Block>,
+    font: &Font,
+    selected: &Option<usize>,
+    snap_distance: f32,
+) {
+    if selected.is_some() {
+        // Connect to block above
+        let possible = get_closest_connection(
+            &blocks,
+            blocks[selected.unwrap()].x.get() as f32,
+            blocks[selected.unwrap()].y.get() as f32,
+            snap_distance,
+            *selected,
+        );
+        // get_block_id_above(
+        //     blocks,
+        //     blocks[selected.unwrap()].x.get() as f32,
+        //     blocks[selected.unwrap()].y.get() as f32,
+        // );
+        if possible.is_some() {
+            let above_block = &blocks[possible.unwrap()];
+            if !is_block_visible_on_screen(
+                &above_block,
+                camera,
+                &(*width as isize),
+                &(*height as isize),
+            ) {
+                return;
+            }
+            render_block_internal(
+                &above_block,
+                above_block.x.get() as isize,
+                above_block.y.get() as isize
+                    + above_block.height.get() as isize,
+                camera,
+                buffer,
+                rgb_to_u32(100, 100, 100),
+                &(*width as isize),
+                &(*height as isize),
+                font,
+            );
+        }
+    }
+}
+
 fn render_block_internal(
     block: &Block,
     origin_x: isize,
@@ -262,13 +313,14 @@ fn is_block_visible_on_screen(
     }
 }
 
+// Misc
 fn is_block_visible_on_screen_proper(
     block: &Block,
     camera: &Camera,
     width: &isize,
     height: &isize,
 ) -> bool {
-    // check corners with is_point_in_requctangle and or the results
+    // check if any corner is visible
     let cam_x = camera.x as f32;
     let cam_y = camera.y as f32;
     let cam_width = *width as f32;
@@ -299,7 +351,7 @@ fn is_block_fully_visible_on_screen(
     width: &isize,
     height: &isize,
 ) -> bool {
-    // check corners with is_point_in_requctangle and or the results
+    // Check if any corner isn't visible
     let cam_x = camera.x as f32;
     let cam_y = camera.y as f32;
     let cam_width = *width as f32;
@@ -331,7 +383,6 @@ fn handle_and_render_on_screen(
     blocks: &Vec<Block>,
     block_colors: &Vec<u32>,
     font: &Font,
-    selected: &Option<usize>,
 ) {
     let now_width = *width as isize;
     let now_height = *height as isize;
@@ -394,26 +445,15 @@ fn is_point_in_requctangle(
     // return true;
 }
 
-fn get_block_id_under_point(
-    blocks: &Vec<Block>,
-    pos_x: f32,
-    pos_y: f32,
-) -> Option<usize> {
-    for block_id in 0..blocks.len() {
-        let block = &blocks[block_id];
-        if is_point_in_requctangle(
-            pos_x,
-            pos_y,
-            block.x.get() as f32,
-            block.y.get() as f32,
-            block.width.get() as f32,
-            block.height.get() as f32,
-        ) {
-            return Some(block_id);
-        }
+fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
+    let mut length = 0.0;
+    for ch in text.chars() {
+        let (metrics, _) = font.rasterize(ch, 20.0);
+        length += metrics.advance_width;
     }
-    return None;
+    return length;
 }
+// Block stuff
 fn get_block_id_above(
     blocks: &Vec<Block>,
     pos_x: f32,
@@ -434,25 +474,122 @@ fn get_block_id_above(
     }
     return None;
 }
-
-fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
-    let mut length = 0.0;
-    for ch in text.chars() {
-        let (metrics, _) = font.rasterize(ch, 20.0);
-        length += metrics.advance_width;
+fn get_closest_connection(
+    blocks: &Vec<Block>,
+    pos_x: f32,
+    pos_y: f32,
+    max_distance: f32,
+    blacklisted: Option<usize>,
+) -> Option<usize> {
+    if DIRTY_LOGIC {
+        return get_any_block_in_distance(
+            blocks,
+            pos_x,
+            pos_y,
+            max_distance,
+            blacklisted,
+        );
+    } else {
+        get_closest_block_in_distance(
+            blocks,
+            pos_x,
+            pos_y,
+            max_distance,
+            blacklisted,
+        )
     }
-    return length;
 }
 
-fn get_global_block_id() -> u32 {
+fn get_closest_block_in_distance(
+    blocks: &[Block],
+    pos_x: f32,
+    pos_y: f32,
+    max_distance: f32,
+    blacklisted: Option<usize>,
+) -> Option<usize> {
+    let mut closest = None;
+    let mut min_distance = max_distance; // Start with max distance as the limit
+
+    for (block_id, block) in blocks.iter().enumerate() {
+        if blacklisted.is_some() {
+            if block_id == blacklisted.unwrap() {
+                continue;
+            }
+        }
+        let distance = get_distance_between_positions(
+            pos_x,
+            pos_y,
+            block.x.get() as f32,
+            block.y.get() as f32,
+        );
+
+        if distance < min_distance {
+            min_distance = distance;
+            closest = Some(block_id); // Problem may be here
+        }
+    }
+
+    return closest;
+}
+fn get_any_block_in_distance(
+    blocks: &Vec<Block>,
+    pos_x: f32,
+    pos_y: f32,
+    max_distance: f32,
+    blacklisted: Option<usize>,
+) -> Option<usize> {
+    for block_id in 0..blocks.len() {
+        if blacklisted.is_some() {
+            if block_id == blacklisted.unwrap() {
+                continue;
+            }
+        }
+        let block = &blocks[block_id];
+        if block.block_type == 0 {
+            if get_distance_between_positions(
+                pos_x,
+                pos_y,
+                block.x.get() as f32,
+                block.y.get() as f32,
+            ) < max_distance
+            {
+                return Some(block_id);
+            }
+        }
+    }
+    return None;
+}
+fn get_block_id_under_point(
+    blocks: &Vec<Block>,
+    pos_x: f32,
+    pos_y: f32,
+) -> Option<usize> {
+    for block_id in 0..blocks.len() {
+        let block = &blocks[block_id];
+        if is_point_in_requctangle(
+            pos_x,
+            pos_y,
+            block.x.get() as f32,
+            block.y.get() as f32,
+            block.width.get() as f32,
+            block.height.get() as f32,
+        ) {
+            return Some(block_id);
+        }
+    }
+    return None;
+}
+
+// Global id counter
+fn get_global_block_id() -> usize {
     return GLOBAL_BLOCK_COUNTER.lock().unwrap().clone();
 }
-fn increment_global_block_id() -> u32 {
+fn increment_global_block_id() -> usize {
     let mut counter = GLOBAL_BLOCK_COUNTER.lock().unwrap();
-    if *counter == u32::MAX {
+    if *counter == usize::MAX {
         panic!(
-            "Ran out of block ids -> tried to create more than {} blocks (Maximal value of u32, honestly impressive. Wait, isn't that like a terrabyte of memory? How has your computer not crashed before this function call?)",
-            u32::MAX
+            "Ran out of block ids -> tried to create more than {} blocks (Maximal value of usize, honestly impressive. Wait, isn't that like a petabyte of memory? How has your computer not crashed before this function call?)",
+            usize::MAX
         );
     }
     *counter += 1;
@@ -494,52 +631,29 @@ fn new_block(
         id: increment_global_block_id(),
     }
 }
-fn render_ghost_block(
-    buffer: &mut Vec<u32>,
-    width: &usize,
-    height: &usize,
-    camera: &Camera,
-    blocks: &Vec<Block>,
-    font: &Font,
-    selected: &Option<usize>,
-) {
-    if selected.is_some() {
-        // Connect to block above
-        let possible = get_block_id_above(
-            blocks,
-            blocks[selected.unwrap()].x.get() as f32,
-            blocks[selected.unwrap()].y.get() as f32,
-        );
-        if possible.is_some() {
-            let above_block = &blocks[possible.unwrap()];
-            if !is_block_visible_on_screen(
-                &above_block,
-                camera,
-                &(*width as isize),
-                &(*height as isize),
-            ) {
-                return;
-            }
-            render_block_internal(
-                &above_block,
-                above_block.x.get() as isize,
-                above_block.y.get() as isize
-                    + above_block.height.get() as isize,
-                camera,
-                buffer,
-                rgb_to_u32(100, 100, 100),
-                &(*width as isize),
-                &(*height as isize),
-                font,
-            );
-        }
+fn get_distance_between_positions(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    if DIRTY_LOGIC {
+        return get_approx_distance(x1, y1, x2, y2);
+    } else {
+        return get_distance_between_positions_accurate(x1, y1, x2, y2);
     }
 }
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
-
-const FAST_RENDER: bool = true;
-static GLOBAL_BLOCK_COUNTER: Lazy<Mutex<u32>> = Lazy::new(|| Mutex::new(0));
+fn get_distance_between_positions_accurate(
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+) -> f32 {
+    return ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt();
+}
+fn get_approx_distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = (x1 - x2).abs();
+    let dy = (y1 - y2).abs();
+    dx.max(dy) + 0.41 * dx.min(dy)
+}
+const FAST_RENDER: bool = false;
+const DIRTY_LOGIC: bool = false;
+static GLOBAL_BLOCK_COUNTER: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0));
 
 fn main() {
     let width = 800;
@@ -579,6 +693,8 @@ fn main() {
         y: (u16::MAX / 2) as isize,
         z: 1.0,
     };
+    let snap_distance = 70.0;
+    let scroll_multiplier = 5.0;
 
     let mut blocks: Vec<Block> = Vec::new();
 
@@ -589,7 +705,7 @@ fn main() {
     //color_names.push("bool".to_string());
     color_rgb.push(rgb_to_u32(50, 80, 255));
     color_names.push("bool".to_string());
-    let font = load_font("src/inter.ttf");
+    let font = file_system::load_font("src/inter.ttf");
 
     for _ in 0..100 {
         blocks.push(new_block(
@@ -676,9 +792,28 @@ fn main() {
                 }
             }
 
+            // Mouse wheel movement
             mouse_wheel_temp = window.get_scroll_wheel();
             if mouse_wheel_temp.is_some() {
-                camera.z -= mouse_wheel_temp.unwrap().1;
+                if window.is_key_down(minifb::Key::LeftCtrl) {
+                    camera.z -= mouse_wheel_temp.unwrap().1;
+                } else {
+                    if window.is_key_down(minifb::Key::LeftShift) {
+                        camera.y -= (mouse_wheel_temp.unwrap().0
+                            * scroll_multiplier)
+                            as isize;
+                        camera.x -= (mouse_wheel_temp.unwrap().1
+                            * scroll_multiplier)
+                            as isize;
+                    } else {
+                        camera.x -= (mouse_wheel_temp.unwrap().0
+                            * scroll_multiplier)
+                            as isize;
+                        camera.y -= (mouse_wheel_temp.unwrap().1
+                            * scroll_multiplier)
+                            as isize;
+                    }
+                }
             }
         }
 
@@ -692,7 +827,6 @@ fn main() {
             &blocks,
             &color_rgb,
             &font,
-            &selected,
         );
         render_ghost_block(
             &mut buffer,
@@ -702,6 +836,7 @@ fn main() {
             &blocks,
             &font,
             &selected,
+            snap_distance,
         );
 
         //############################################
