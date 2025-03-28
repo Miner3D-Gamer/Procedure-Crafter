@@ -5,13 +5,15 @@ edition = "2021"
 
 [dependencies]
 minifb = "0.28.0"
-mirl = "0.1.5"
-imgui = "0.12.0"
-#imgui-opengl-renderer = "0.12.1"
+mirl = "0.1.7"
 gl = "0.14"
 rand = "0.9.0"
-fontdue = "0.7"
-once_cell = "1.19"
+fontdue = "0.9.3"
+once_cell = "1.21.3"
+# imgui = "0.13"
+# image = "0.24"
+
+
 
 # allow overflows
 [profile.release]

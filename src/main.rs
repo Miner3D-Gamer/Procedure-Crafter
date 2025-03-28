@@ -1,12 +1,15 @@
 #![allow(dead_code)]
+#![allow(static_mut_refs)] // Yeah, this is probably fine
 
 use core::panic;
 use minifb::{Icon, Window, WindowOptions};
 use mirl::graphics::rgb_to_u32;
 
+use fontdue::Font;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use std::{cell::Cell, str::FromStr};
+mod file_system;
 // Cell: Make attribute mutable while keeping the rest of the struct static
 
 struct Camera {
@@ -31,20 +34,136 @@ struct Block {
     inputs: Vec<BlockInput>,
     block_color_id: usize,
     id: usize,
+    connected_top: Cell<Option<usize>>,
+    connected_below: Cell<Option<usize>>,
+    possible_connection_above: Cell<Option<usize>>,
+    possible_connection_below: Cell<Option<usize>>,
+    recently_moved: Cell<bool>,
 }
+
+impl Block {
+    fn new(
+        name: String,
+        x: i16,
+        y: i16,
+        block_type: u8,
+        required_imports: Vec<String>,
+        required_contexts: Vec<String>,
+        file_versions: Vec<String>,
+        file_locations: Vec<String>,
+        output: String,
+        inputs: Vec<BlockInput>,
+        color_types: &Vec<String>,
+        font: &Font,
+    ) -> Block {
+        let color_id = color_types.iter().position(|x| *x == output).unwrap();
+        let x = ((u16::MAX / 2) as i16 + x) as u16;
+        let y = ((u16::MAX / 2) as i16 + y) as u16;
+
+        Block {
+            name: name.clone(),
+            x: Cell::new(x),
+            y: Cell::new(y),
+            width: Cell::new(get_length_of_text_in_font(&name, &font)),
+            height: Cell::new(40.0),
+            block_type: block_type,
+            required_imports: required_imports,
+            required_contexts: required_contexts,
+            file_versions: file_versions,
+            file_locations: file_locations,
+            output: output,
+            inputs: inputs,
+            block_color_id: color_id,
+            id: increment_global_block_id(),
+            connected_top: Cell::new(None),
+            connected_below: Cell::new(None),
+            possible_connection_above: Cell::new(None),
+            possible_connection_below: Cell::new(None),
+            recently_moved: Cell::new(false),
+        }
+    }
+}
+
 struct BlockInput {
     input_type: String,
     name: String,
     expected: Option<Vec<String>>,
     expected_return: Option<Vec<String>>,
 }
+impl BlockInput {
+    fn new(
+        input_type: String,
+        name: String,
+        expected: Option<Vec<String>>,
+        expected_return: Option<Vec<String>>,
+    ) -> Result<Self, &'static str> {
+        if let (Some(ref e), Some(ref er)) = (&expected, &expected_return) {
+            if e.len() != er.len() {
+                return Err(
+                    "expected and expected_return must have the same length",
+                );
+            }
+        }
 
-use fontdue::Font;
-mod file_system;
+        Ok(Self {
+            input_type,
+            name,
+            expected,
+            expected_return,
+        })
+    }
+}
+
+use fontdue::Metrics;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Once;
+
+static INIT: Once = Once::new();
+static mut GLYPH_CACHE: Option<
+    RefCell<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>>,
+> = None;
+
+fn get_glyph_cache(
+) -> &'static RefCell<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>> {
+    unsafe {
+        INIT.call_once(|| {
+            GLYPH_CACHE = Some(RefCell::new(HashMap::new()));
+        });
+        GLYPH_CACHE.as_ref().unwrap()
+    }
+}
+fn round_float_key(value: f32) -> (i32, i32) {
+    let multiplier = 10000.0; // Provides 4 decimal places of precision
+    let rounded_int_x = (value * multiplier).round() as i32;
+    let rounded_int_y = (value * multiplier).fract() as i32;
+    (rounded_int_x, rounded_int_y)
+}
 
 // Drawing
 fn draw_text(
-    buffer: &mut Vec<u32>,
+    buffer: *mut u32,
+    width: &usize,
+    height: &usize,
+    text: &str,
+    x: usize,
+    y: usize,
+    color: u32,
+    size: f32,
+    font: &Font,
+) {
+    // This function takes like half the render time
+    if FAST_RENDER {
+        draw_text_no_blend(
+            buffer, width, height, text, x, y, color, size, font,
+        );
+    } else {
+        draw_text_blend(buffer, width, height, text, x, y, color, size, font);
+    }
+}
+
+fn draw_text_blend(
+    buffer: *mut u32,
     width: &usize,
     height: &usize,
     text: &str,
@@ -57,15 +176,30 @@ fn draw_text(
     let mut pen_x = x;
     let pen_y = y;
 
+    let rounded_size_key = round_float_key(size);
+    let font_metrics = font.horizontal_line_metrics(size).unwrap();
+
     for ch in text.chars() {
-        let (metrics, bitmap) = font.rasterize(ch, size);
-        let font_metrics = font.horizontal_line_metrics(size).unwrap();
+        // Try to get the glyph from cache first
+        let (metrics, bitmap) = {
+            let cache = get_glyph_cache().borrow();
+            cache.get(&(ch, rounded_size_key)).cloned()
+        }
+        .unwrap_or_else(|| {
+            let rasterized = font.rasterize(ch, size);
+
+            // Insert into cache
+            let mut cache_mut = get_glyph_cache().borrow_mut();
+            cache_mut.insert((ch, rounded_size_key), rasterized.clone());
+
+            rasterized
+        });
 
         // Draw each character into the buffer
         for gy in 0..metrics.height {
             for gx in 0..metrics.width {
                 let px = pen_x + gx;
-                // Correcting for letter height -> Buggy but working so ¯\_(ツ)_/¯
+                // Correcting for letter height
                 let py = pen_y
                     + gy
                     + (font_metrics.ascent - metrics.height as f32) as usize;
@@ -75,48 +209,53 @@ fn draw_text(
                     let alpha = bitmap[gy * metrics.width + gx]; // Alpha (0-255)
 
                     if alpha > 0 {
-                        let bg = buffer[index];
+                        unsafe {
+                            let bg = *buffer.add(index);
+                            // Extract RGBA
+                            let (br, bg, bb, ba) = (
+                                (bg >> 24) & 0xFF,
+                                (bg >> 16) & 0xFF,
+                                (bg >> 8) & 0xFF,
+                                bg & 0xFF,
+                            );
+                            let (tr, tg, tb, ta) = (
+                                (color >> 24) & 0xFF,
+                                (color >> 16) & 0xFF,
+                                (color >> 8) & 0xFF,
+                                color & 0xFF,
+                            );
 
-                        // Extract RGBA
-                        let (br, bg, bb, ba) = (
-                            (bg >> 24) & 0xFF,
-                            (bg >> 16) & 0xFF,
-                            (bg >> 8) & 0xFF,
-                            bg & 0xFF,
-                        );
-                        let (tr, tg, tb, ta) = (
-                            (color >> 24) & 0xFF,
-                            (color >> 16) & 0xFF,
-                            (color >> 8) & 0xFF,
-                            color & 0xFF,
-                        );
+                            // Alpha blending
+                            let inv_alpha = 255 - alpha;
+                            let nr = ((tr as u16 * alpha as u16
+                                + br as u16 * inv_alpha as u16)
+                                / 255)
+                                as u8;
+                            let ng = ((tg as u16 * alpha as u16
+                                + bg as u16 * inv_alpha as u16)
+                                / 255)
+                                as u8;
+                            let nb = ((tb as u16 * alpha as u16
+                                + bb as u16 * inv_alpha as u16)
+                                / 255)
+                                as u8;
+                            let na = ((ta as u16 * alpha as u16
+                                + ba as u16 * inv_alpha as u16)
+                                / 255)
+                                as u8;
 
-                        // Alpha blending
-                        let inv_alpha = 255 - alpha;
-                        let nr = ((tr as u16 * alpha as u16
-                            + br as u16 * inv_alpha as u16)
-                            / 255) as u8;
-                        let ng = ((tg as u16 * alpha as u16
-                            + bg as u16 * inv_alpha as u16)
-                            / 255) as u8;
-                        let nb = ((tb as u16 * alpha as u16
-                            + bb as u16 * inv_alpha as u16)
-                            / 255) as u8;
-                        let na = ((ta as u16 * alpha as u16
-                            + ba as u16 * inv_alpha as u16)
-                            / 255) as u8;
-
-                        draw_pixel(
-                            buffer,
-                            &(*width as isize),
-                            &(*height as isize),
-                            px as isize,
-                            py as isize,
-                            (nr as u32) << 24
-                                | (ng as u32) << 16
-                                | (nb as u32) << 8
-                                | na as u32,
-                        );
+                            draw_pixel(
+                                buffer,
+                                width,
+                                height,
+                                px,
+                                py,
+                                (nr as u32) << 24
+                                    | (ng as u32) << 16
+                                    | (nb as u32) << 8
+                                    | na as u32,
+                            );
+                        }
                     }
                 }
             }
@@ -127,54 +266,122 @@ fn draw_text(
     }
 }
 
+fn draw_text_no_blend(
+    buffer: *mut u32,
+    width: &usize,
+    height: &usize,
+    text: &str,
+    x: usize,
+    y: usize,
+    color: u32,
+    size: f32,
+    font: &Font,
+) {
+    let mut pen_x = x;
+    let pen_y = y;
+    let font_metrics = font.horizontal_line_metrics(size).unwrap();
+    let ascent = font_metrics.ascent as usize;
+
+    let rounded_size_key = round_float_key(size);
+
+    for ch in text.chars() {
+        // Try to get the glyph from cache first
+        let cached_glyph = {
+            let cache = get_glyph_cache().borrow();
+            cache.get(&(ch, rounded_size_key)).cloned()
+        };
+
+        // If not in cache, rasterize and insert
+        let (metrics, bitmap) = cached_glyph.unwrap_or_else(|| {
+            let rasterized = font.rasterize(ch, size);
+
+            // Insert into cache
+            let mut cache_mut = get_glyph_cache().borrow_mut();
+            cache_mut.insert((ch, rounded_size_key), rasterized.clone());
+
+            rasterized
+        });
+
+        let offset_y = ascent.saturating_sub(metrics.height);
+        let w = metrics.width;
+        let h = metrics.height;
+        let advance_x = metrics.advance_width as usize;
+
+        for gy in 0..h {
+            let py = pen_y + gy + offset_y;
+            if py >= *height {
+                continue;
+            }
+
+            let row_start = gy * w;
+            for gx in 0..w {
+                let px = pen_x + gx;
+                if px >= *width {
+                    continue;
+                }
+
+                if bitmap[row_start + gx] > 0 {
+                    draw_pixel(buffer, width, height, px, py, color);
+                }
+            }
+        }
+        pen_x += advance_x;
+    }
+}
+
+#[inline(always)]
 fn draw_pixel(
-    buffer: &mut Vec<u32>,
-    width: &isize,
-    height: &isize,
-    x: isize,
-    y: isize,
+    buffer: *mut u32,
+    width: &usize,
+    height: &usize,
+    x: usize,
+    y: usize,
     color: u32,
 ) {
     if FAST_RENDER {
-        draw_pixel_unsafe(buffer, width, height, x, y, color);
+        draw_pixel_unsafe(buffer, width, x, y, color);
     } else {
         draw_pixel_safe(buffer, width, height, x, y, color);
     }
 }
 
+#[inline(always)]
 fn draw_pixel_safe(
-    buffer: &mut Vec<u32>,
-    width: &isize,
-    height: &isize,
-    x: isize,
-    y: isize,
+    buffer: *mut u32,
+    width: &usize,
+    height: &usize,
+    x: usize,
+    y: usize,
     color: u32,
 ) {
-    if x < 0 || y < 0 {
-        return;
-    }
+    // if x < 0 || y < 0 {
+    //     return;
+    // }
     if x >= *width || y >= *height {
         return;
     }
-    draw_pixel_unsafe(buffer, width, height, x, y, color);
+    draw_pixel_unsafe(buffer, width, x, y, color);
 }
+
+#[inline(always)]
 fn draw_pixel_unsafe(
-    buffer: &mut Vec<u32>,
-    width: &isize,
-    height: &isize,
-    x: isize,
-    y: isize,
+    buffer: *mut u32,
+    width: &usize,
+    x: usize,
+    y: usize,
     color: u32,
 ) {
-    let index = y * width + x;
-    if false {
-        let found = get_pixel(buffer, width, height, x, y);
-        if found != 0 {
-            return;
-        }
+    unsafe {
+        *buffer.add(y * width + x) = color;
     }
-    buffer[index as usize] = color; //mirl::graphics::rgb_to_u32(255, 0, 0);
 }
+
+// if false {
+//     let found = get_pixel(buffer, width, height, x, y);
+//     if found != 0 {
+//         return;
+//     }
+// }
 fn get_pixel(
     buffer: &Vec<u32>,
     width: &isize,
@@ -195,7 +402,7 @@ fn get_pixel(
 fn render_block(
     block: &Block,
     camera: &Camera,
-    buffer: &mut Vec<u32>,
+    buffer: *mut u32,
     block_colors: &Vec<u32>,
     width: &isize,
     height: &isize,
@@ -208,14 +415,21 @@ fn render_block(
         camera,
         buffer,
         block_colors[block.block_color_id],
-        width,
-        height,
+        &(*width as usize),
+        &(*height as usize),
         font,
     );
 }
+fn get_top_most_block_id_or_self(blocks: &Vec<Block>, id: usize) -> usize {
+    let mut block = &blocks[id];
+    while block.possible_connection_above.get().is_some() {
+        block = &blocks[block.possible_connection_above.get().unwrap()];
+    }
+    return block.id;
+}
 
-fn render_ghost_block(
-    buffer: &mut Vec<u32>,
+fn handle_connection_and_render_ghost_block(
+    buffer: *mut u32,
     width: &usize,
     height: &usize,
     camera: &Camera,
@@ -232,14 +446,25 @@ fn render_ghost_block(
             blocks[selected.unwrap()].y.get() as f32,
             snap_distance,
             *selected,
+            true,
         );
-        // get_block_id_above(
-        //     blocks,
-        //     blocks[selected.unwrap()].x.get() as f32,
-        //     blocks[selected.unwrap()].y.get() as f32,
-        // );
+
         if possible.is_some() {
+            if is_there_a_loop_in_block_connections_for_block_internal(
+                &blocks,
+                blocks[possible.unwrap()].id,
+                &mut Vec::from([blocks[selected.unwrap()].id]),
+            ) {
+                blocks[selected.unwrap()].possible_connection_above.set(None);
+                return;
+            } else {
+                // Save block, only if it is not a loop
+                blocks[selected.unwrap()]
+                    .possible_connection_above
+                    .set(possible);
+            }
             let above_block = &blocks[possible.unwrap()];
+
             if !is_block_visible_on_screen(
                 &above_block,
                 camera,
@@ -256,8 +481,8 @@ fn render_ghost_block(
                 camera,
                 buffer,
                 rgb_to_u32(100, 100, 100),
-                &(*width as isize),
-                &(*height as isize),
+                width,
+                height,
                 font,
             );
         }
@@ -269,10 +494,10 @@ fn render_block_internal(
     origin_x: isize,
     origin_y: isize,
     camera: &Camera,
-    buffer: &mut Vec<u32>,
+    buffer: *mut u32,
     block_color: u32,
-    width: &isize,
-    height: &isize,
+    width: &usize,
+    height: &usize,
     font: &Font,
 ) {
     for x in (origin_x - camera.x)
@@ -282,7 +507,14 @@ fn render_block_internal(
             ..(origin_y + block.height.get() as isize - camera.y)
         {
             {
-                draw_pixel(buffer, &width, &height, x, y, block_color);
+                draw_pixel(
+                    buffer,
+                    width,
+                    height,
+                    x as usize,
+                    y as usize,
+                    block_color,
+                );
             }
         }
     }
@@ -376,18 +608,24 @@ fn is_block_fully_visible_on_screen(
     return true;
 }
 fn handle_and_render_on_screen(
-    buffer: &mut Vec<u32>,
+    buffer: *mut u32,
     width: &usize,
     height: &usize,
     camera: &Camera,
-    blocks: &Vec<Block>,
+    blocks: &mut Vec<Block>,
     block_colors: &Vec<u32>,
     font: &Font,
 ) {
     let now_width = *width as isize;
     let now_height = *height as isize;
+
+    let block_ids: Vec<usize> = (0..blocks.len()).collect();
+
     // Reverse block order in order for overdraw to to its job in our favor
-    for block in blocks.iter().rev() {
+    for id in block_ids {
+        move_block_to_connected(blocks, &Some(id));
+        let block = &blocks[id];
+
         if !is_block_visible_on_screen(block, camera, &now_width, &now_height) {
             continue;
         }
@@ -480,14 +718,16 @@ fn get_closest_connection(
     pos_y: f32,
     max_distance: f32,
     blacklisted: Option<usize>,
+    top: bool,
 ) -> Option<usize> {
-    if DIRTY_LOGIC {
+    if FAST_LOGIC {
         return get_any_block_in_distance(
             blocks,
             pos_x,
             pos_y,
             max_distance,
             blacklisted,
+            top,
         );
     } else {
         get_closest_block_in_distance(
@@ -496,6 +736,7 @@ fn get_closest_connection(
             pos_y,
             max_distance,
             blacklisted,
+            top,
         )
     }
 }
@@ -506,6 +747,7 @@ fn get_closest_block_in_distance(
     pos_y: f32,
     max_distance: f32,
     blacklisted: Option<usize>,
+    top: bool,
 ) -> Option<usize> {
     let mut closest = None;
     let mut min_distance = max_distance; // Start with max distance as the limit
@@ -516,11 +758,20 @@ fn get_closest_block_in_distance(
                 continue;
             }
         }
+        let check_x;
+        let check_y;
+        if top {
+            check_x = block.x.get() as f32;
+            check_y = block.y.get() as f32;
+        } else {
+            check_x = block.x.get() as f32;
+            check_y = block.y.get() as f32 + block.height.get();
+        }
         let distance = get_distance_between_positions(
             pos_x,
             pos_y,
-            block.x.get() as f32,
-            block.y.get() as f32,
+            check_x as f32,
+            check_y as f32,
         );
 
         if distance < min_distance {
@@ -537,6 +788,7 @@ fn get_any_block_in_distance(
     pos_y: f32,
     max_distance: f32,
     blacklisted: Option<usize>,
+    top: bool,
 ) -> Option<usize> {
     for block_id in 0..blocks.len() {
         if blacklisted.is_some() {
@@ -545,12 +797,21 @@ fn get_any_block_in_distance(
             }
         }
         let block = &blocks[block_id];
+        let check_x;
+        let check_y;
+        if top {
+            check_x = block.x.get() as f32;
+            check_y = block.y.get() as f32;
+        } else {
+            check_x = block.x.get() as f32;
+            check_y = block.y.get() as f32 + block.height.get();
+        }
         if block.block_type == 0 {
             if get_distance_between_positions(
                 pos_x,
                 pos_y,
-                block.x.get() as f32,
-                block.y.get() as f32,
+                check_x as f32,
+                check_y as f32,
             ) < max_distance
             {
                 return Some(block_id);
@@ -596,43 +857,8 @@ fn increment_global_block_id() -> usize {
     return *counter;
 }
 
-fn new_block(
-    name: String,
-    x: i16,
-    y: i16,
-    block_type: u8,
-    required_imports: Vec<String>,
-    required_contexts: Vec<String>,
-    file_versions: Vec<String>,
-    file_locations: Vec<String>,
-    output: String,
-    inputs: Vec<BlockInput>,
-    color_types: &Vec<String>,
-    font: &Font,
-) -> Block {
-    let color_id = color_types.iter().position(|x| *x == output).unwrap();
-    let x = ((u16::MAX / 2) as i16 + x) as u16;
-    let y = ((u16::MAX / 2) as i16 + y) as u16;
-
-    Block {
-        name: name.clone(),
-        x: Cell::new(x),
-        y: Cell::new(y),
-        width: Cell::new(get_length_of_text_in_font(&name, &font)),
-        height: Cell::new(40.0),
-        block_type: block_type,
-        required_imports: required_imports,
-        required_contexts: required_contexts,
-        file_versions: file_versions,
-        file_locations: file_locations,
-        output: output,
-        inputs: inputs,
-        block_color_id: color_id,
-        id: increment_global_block_id(),
-    }
-}
 fn get_distance_between_positions(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    if DIRTY_LOGIC {
+    if FAST_LOGIC {
         return get_approx_distance(x1, y1, x2, y2);
     } else {
         return get_distance_between_positions_accurate(x1, y1, x2, y2);
@@ -651,13 +877,154 @@ fn get_approx_distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     let dy = (y1 - y2).abs();
     dx.max(dy) + 0.41 * dx.min(dy)
 }
-const FAST_RENDER: bool = false;
-const DIRTY_LOGIC: bool = false;
+fn add_item_to_max_sized_list(list: &mut Vec<u64>, max_size: usize, item: u64) {
+    list.push(item);
+    if list.len() < max_size {
+        return;
+    }
+    let to_remove = list.len() - max_size;
+    for _ in 0..to_remove {
+        list.remove(0);
+    }
+}
+
+fn index_by_block_id(id: usize, blocks: &Vec<Block>) -> Option<usize> {
+    for block_id in 0..blocks.len() {
+        if blocks[block_id].id == id {
+            return Some(block_id);
+        }
+    }
+    return None;
+}
+
+fn is_there_a_loop_in_block_connections_for_block(
+    blocks: &Vec<Block>,
+    block_id: usize,
+) -> bool {
+    let mut already_checked = Vec::new();
+    return is_there_a_loop_in_block_connections_for_block_internal(
+        blocks,
+        block_id,
+        &mut already_checked,
+    );
+}
+fn is_there_a_loop_in_block_connections_for_block_internal(
+    blocks: &Vec<Block>,
+    block_index: usize,
+    already_checked: &mut Vec<usize>,
+) -> bool {
+    if already_checked.contains(&block_index) {
+        return true;
+    }
+    already_checked.push(block_index);
+    let block = &blocks[index_by_block_id(block_index, blocks).unwrap()];
+    if block.connected_below.get().is_some() {
+        return is_there_a_loop_in_block_connections_for_block_internal(
+            blocks,
+            block.connected_below.get().unwrap(),
+            already_checked,
+        );
+    }
+    // if block.connected_below.get().is_some() {
+    //     return is_there_a_loop_in_block_connections_for_block(
+    //         blocks,
+    //         block.connected_below.get().unwrap(),
+    //         already_checked,
+    //     );
+    // }
+    return false;
+}
+fn get_ids_connected_to_block(top: usize, blocks: &Vec<Block>) -> Vec<usize> {
+    let block = &blocks[index_by_block_id(top, &blocks).unwrap()];
+    let mut list = Vec::new();
+    list.push(top);
+    if block.connected_below.get().is_some() {
+        list.extend(get_ids_connected_to_block(
+            block.connected_below.get().unwrap(),
+            blocks,
+        ))
+    }
+    return list;
+}
+fn index_by_block_ids(
+    blocks: &Vec<Block>,
+    ids: Vec<usize>,
+) -> Vec<Option<usize>> {
+    let mut return_list = Vec::new();
+    for id in ids {
+        return_list.push(index_by_block_id(id, blocks))
+    }
+    return return_list;
+}
+fn get_total_height_of_blocks(
+    blocks: &Vec<Block>,
+    indexes: Vec<Option<usize>>,
+) -> f32 {
+    // For optimization, remove the Option<>
+    let mut height: f32 = 0.0;
+    for idx in indexes {
+        if idx.is_none() {
+            continue;
+        }
+        let block = &blocks[idx.unwrap()];
+        height += block.height.get();
+    }
+    return height;
+}
+
+fn move_block_to_connected(blocks: &mut Vec<Block>, selected: &Option<usize>) {
+    if selected.is_none() {
+        return;
+    }
+    let block = &blocks[selected.unwrap()];
+    let top_block_id = block.connected_top.get();
+    if top_block_id.is_none() {
+        return;
+    }
+    let top_block =
+        &blocks[index_by_block_id(top_block_id.unwrap(), blocks).unwrap()];
+    let block_query = get_ids_connected_to_block(top_block_id.unwrap(), blocks);
+    let total_offset = get_total_height_of_blocks(
+        blocks,
+        index_by_block_ids(blocks, block_query),
+    );
+    println!("{total_offset} {}", total_offset as u16 + top_block.y.get());
+
+    block.x.set(top_block.x.get());
+    block.y.set(total_offset as u16 + top_block.y.get());
+    // blocks[above_block.unwrap()].x.set(blocks[selected.unwrap()].x.get());
+    // blocks[above_block.unwrap()].y.set(
+    //     blocks[selected.unwrap()].y.get()
+    //         + blocks[selected.unwrap()].height.get() as u16,
+    // );
+}
+#[inline(always)]
+fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
+    if value1 == 0.0 {
+        return 100.0; // Avoid division by zero, assuming 100% difference
+    }
+    ((value2 - value1) / value1).abs() * 100.0
+}
+
+// Goal: Render 1000 Blocks at >=60 fps
+// Current: 10000 at ~40 fps
+// ------------------------------------------< SETTINGS >------------------------------------------
+
+const FAST_RENDER: bool = false; // ~10% <-> ~40% Faster rendering
+const FAST_LOGIC: bool = false; // No analytics
+
+// ------------------------------------------------------------------------------------------------
+
 static GLOBAL_BLOCK_COUNTER: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0));
 
 fn main() {
     let width = 800;
     let height = 600;
+
+    let snap_distance = 70.0;
+    let scroll_multiplier = 5.0;
+    let max_fps = 30;
+
     let window_name = "Rust window";
     // Create a window with the title "Rust Window"
     let mut window = Window::new(
@@ -674,12 +1041,13 @@ fn main() {
     #[cfg(target_os = "windows")]
     window.set_icon(Icon::from_str("src/cot.ico").unwrap());
 
+    let target_frame_delta = mirl::time::MICROS_PER_SEC / max_fps; // Time for one frame at the target FPS
     let mut frame_start;
 
     let title_bat_height = mirl::system::get_title_bar_height();
     let (screen_width, screen_height) = mirl::system::get_screen_resolution();
 
-    let mut delta_time;
+    let mut delta_time: u64;
     let mut buffer: Vec<u32>;
     let mut fps;
 
@@ -693,8 +1061,6 @@ fn main() {
         y: (u16::MAX / 2) as isize,
         z: 1.0,
     };
-    let snap_distance = 70.0;
-    let scroll_multiplier = 5.0;
 
     let mut blocks: Vec<Block> = Vec::new();
 
@@ -707,9 +1073,9 @@ fn main() {
     color_names.push("bool".to_string());
     let font = file_system::load_font("src/inter.ttf");
 
-    for _ in 0..100 {
-        blocks.push(new_block(
-            "new block".to_string(),
+    for id in 0..10 {
+        blocks.push(Block::new(
+            format!("new block {}", id + 1),
             rand::random::<i16>() / 100,
             rand::random::<i16>() / 100,
             0,
@@ -728,9 +1094,12 @@ fn main() {
     let mut mouse_down_temp;
     let mut mouse_down = false;
 
+    let mut fps_list: Vec<u64> = Vec::new();
+
     let mut selected: Option<usize> = None;
 
     let mut mouse_outside;
+    let mut stable_fps: u64;
 
     // Set window to be dead centered
     window.set_position(
@@ -743,6 +1112,13 @@ fn main() {
         frame_start = mirl::time::get_time();
         buffer = mirl::render::clear_screen(width, height);
 
+        let buffer_pointer: *mut u32 = buffer.as_mut_ptr();
+
+        // if (buffer_pointer as usize) % 16 == 0 {
+        //     println!("Buffer is 16-byte aligned");
+        // } else {
+        //     println!("Buffer is NOT 16-byte aligned");
+        // }
         // Mouse stuff and block(/camera) selection/movement
         mouse_delta = mouse_pos;
         mouse_pos = window.get_mouse_pos(minifb::MouseMode::Pass).unwrap();
@@ -771,7 +1147,73 @@ fn main() {
                         mouse_pos.1 + camera.y as f32,
                     );
                 }
+                if selected.is_some() {
+                    blocks[selected.unwrap()].connected_top.set(None);
+                    let list = get_ids_connected_to_block(
+                        blocks[selected.unwrap()].id,
+                        &blocks,
+                    );
+                    // find position of element with value blocks[selected.unwrap()].id
+                    let split_point = list.iter().position(|block| {
+                        *block == blocks[selected.unwrap()].id
+                    });
+                    split_point.unwrap();
+                    if split_point.unwrap() > 0 {
+                        // Remove the connected tag from the block this block is connected to (But only if that block above exists!)
+                        let block_above = &blocks[index_by_block_id(
+                            list[split_point.unwrap() - 1],
+                            &blocks,
+                        )
+                        .unwrap()];
+                        block_above.connected_below.set(None);
+                    }
+
+                    // Move all blocks connected to the selected block
+                    for id in list[split_point.unwrap()..].iter() {
+                        blocks[index_by_block_id(*id, &blocks).unwrap()]
+                            .recently_moved
+                            .set(true);
+                    }
+                }
             } else {
+                // Connect block previously selected if possible
+                if selected.is_some() {
+                    let block = &blocks[selected.unwrap()];
+                    if block.possible_connection_above.get().is_some() {
+                        let connection_id_above =
+                            block.possible_connection_above.get().unwrap();
+
+                        if is_there_a_loop_in_block_connections_for_block_internal(
+                                &blocks,
+                                get_top_most_block_id_or_self(
+                                    &blocks,
+                                    blocks[selected.unwrap()]
+                                        .possible_connection_above
+                                        .get()
+                                        .unwrap(),
+                                ),
+                                &mut Vec::from([blocks[selected.unwrap()].id]),
+                            ) {
+                                panic!("Loop detected");
+                            }
+                        // Tell current block to connect above
+                        block.connected_top.set(Some(
+                            get_top_most_block_id_or_self(
+                                &blocks,
+                                connection_id_above,
+                            ),
+                        ));
+                        // Get above block
+                        let above_block = &blocks[index_by_block_id(
+                            connection_id_above,
+                            &blocks,
+                        )
+                        .unwrap()];
+                        above_block.connected_below.set(Some(block.id));
+                        // Set current possible above block to none
+                        block.possible_connection_above.set(None)
+                    }
+                }
                 selected = None;
             }
 
@@ -795,22 +1237,32 @@ fn main() {
             // Mouse wheel movement
             mouse_wheel_temp = window.get_scroll_wheel();
             if mouse_wheel_temp.is_some() {
+                let extra_mul;
+                if window.is_key_down(minifb::Key::RightShift) {
+                    extra_mul = 10.0;
+                } else {
+                    extra_mul = 1.0;
+                }
                 if window.is_key_down(minifb::Key::LeftCtrl) {
-                    camera.z -= mouse_wheel_temp.unwrap().1;
+                    camera.z -= mouse_wheel_temp.unwrap().1 * extra_mul;
                 } else {
                     if window.is_key_down(minifb::Key::LeftShift) {
                         camera.y -= (mouse_wheel_temp.unwrap().0
-                            * scroll_multiplier)
+                            * scroll_multiplier
+                            * extra_mul)
                             as isize;
                         camera.x -= (mouse_wheel_temp.unwrap().1
-                            * scroll_multiplier)
+                            * scroll_multiplier
+                            * extra_mul)
                             as isize;
                     } else {
                         camera.x -= (mouse_wheel_temp.unwrap().0
-                            * scroll_multiplier)
+                            * scroll_multiplier
+                            * extra_mul)
                             as isize;
                         camera.y -= (mouse_wheel_temp.unwrap().1
-                            * scroll_multiplier)
+                            * scroll_multiplier
+                            * extra_mul)
                             as isize;
                     }
                 }
@@ -820,16 +1272,16 @@ fn main() {
         //############################################
 
         handle_and_render_on_screen(
-            &mut buffer,
+            buffer_pointer,
             &width,
             &height,
             &camera,
-            &blocks,
+            &mut blocks,
             &color_rgb,
             &font,
         );
-        render_ghost_block(
-            &mut buffer,
+        handle_connection_and_render_ghost_block(
+            buffer_pointer,
             &width,
             &height,
             &camera,
@@ -844,18 +1296,25 @@ fn main() {
             .update_with_buffer(&buffer, width, height)
             .expect("Unable to update window :(");
 
-        delta_time = mirl::time::get_elapsed_as_us(frame_start);
+        delta_time = mirl::time::get_elapsed_as_us(frame_start) as u64;
 
         if delta_time != 0 {
-            fps = 1_000_000 / delta_time; // Convert nanoseconds to FPS
+            fps = mirl::time::MICROS_PER_SEC / delta_time;
         } else {
-            fps = u128::MAX;
+            fps = u64::MAX;
         }
 
+        add_item_to_max_sized_list(&mut fps_list, fps as usize, fps);
+        if fps_list.len() == 0 {
+            stable_fps = 0;
+        } else {
+            stable_fps = fps_list.iter().sum::<u64>() / fps_list.len() as u64;
+        }
         //println!("FPS: {}", fps);
         window.set_title(
             format!(
-                "Rust Window {} FPS | x{} y{} z{} | {} {} -> {} {}",
+                "Rust Window {} FPS ({}) | x{} y{} z{} | {} {} -> {} {}",
+                stable_fps,
                 fps,
                 camera.x,
                 camera.y,
@@ -867,5 +1326,10 @@ fn main() {
             )
             .as_str(),
         );
+
+        if delta_time < target_frame_delta {
+            let sleep_time: u64 = target_frame_delta - delta_time;
+            std::thread::sleep(std::time::Duration::from_micros(sleep_time));
+        }
     }
 }
