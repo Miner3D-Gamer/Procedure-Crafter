@@ -3,14 +3,45 @@
 
 use core::panic;
 use minifb::{Icon, Window, WindowOptions};
-use mirl::graphics::rgb_to_u32;
 
 use fontdue::Font;
-use once_cell::sync::Lazy;
+use mirl::graphics::rgb_to_u32;
+
 use std::sync::Mutex;
 use std::{cell::Cell, str::FromStr};
 mod file_system;
 // Cell: Make attribute mutable while keeping the rest of the struct static
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ID(usize);
+
+impl From<usize> for ID {
+    fn from(value: usize) -> Self {
+        ID(value)
+    }
+}
+impl From<ID> for usize {
+    fn from(id: ID) -> Self {
+        id.0
+    }
+}
+impl<T> std::ops::Index<ID> for Vec<T> {
+    type Output = T;
+    fn index(&self, index: ID) -> &Self::Output {
+        &self[index.0]
+    }
+}
+impl<T> std::ops::IndexMut<ID> for Vec<T> {
+    fn index_mut(&mut self, index: ID) -> &mut Self::Output {
+        &mut self[index.0]
+    }
+}
+impl std::fmt::Display for ID {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 struct Camera {
     x: isize,
@@ -33,11 +64,11 @@ struct Block {
     output: String,
     inputs: Vec<BlockInput>,
     block_color_id: usize,
-    id: usize,
-    connected_top: Cell<Option<usize>>,
-    connected_below: Cell<Option<usize>>,
-    possible_connection_above: Cell<Option<usize>>,
-    possible_connection_below: Cell<Option<usize>>,
+    id: ID,
+    connected_top: Cell<Option<ID>>,
+    connected_below: Cell<Option<ID>>,
+    possible_connection_above: Cell<Option<ID>>,
+    possible_connection_below: Cell<Option<ID>>,
     recently_moved: Cell<bool>,
 }
 
@@ -74,7 +105,7 @@ impl Block {
             output: output,
             inputs: inputs,
             block_color_id: color_id,
-            id: increment_global_block_id(),
+            id: increment_global_block_id().into(),
             connected_top: Cell::new(None),
             connected_below: Cell::new(None),
             possible_connection_above: Cell::new(None),
@@ -226,7 +257,7 @@ fn draw_text_blend(
                             );
 
                             // Alpha blending
-                            let inv_alpha = 255 - alpha;
+                            let inv_alpha: u8 = 255 - alpha;
                             let nr = ((tr as u16 * alpha as u16
                                 + br as u16 * inv_alpha as u16)
                                 / 255)
@@ -420,10 +451,11 @@ fn render_block(
         font,
     );
 }
-fn get_top_most_block_id_or_self(blocks: &Vec<Block>, id: usize) -> usize {
-    let mut block = &blocks[id];
-    while block.possible_connection_above.get().is_some() {
-        block = &blocks[block.possible_connection_above.get().unwrap()];
+fn get_top_most_block_id_or_self(blocks: &Vec<Block>, index: usize) -> ID {
+    // Is this broken???????
+    let block = &blocks[index];
+    if block.connected_top.get().is_some() {
+        return block.connected_top.get().unwrap();
     }
     return block.id;
 }
@@ -448,22 +480,26 @@ fn handle_connection_and_render_ghost_block(
             *selected,
             true,
         );
+        let block = &blocks[selected.unwrap()];
+        block.possible_connection_above.set(None);
 
         if possible.is_some() {
+            let above_block = &blocks[possible.unwrap()];
+            // TODO: Fix this -> This always returns false
             if is_there_a_loop_in_block_connections_for_block_internal(
                 &blocks,
-                blocks[possible.unwrap()].id,
-                &mut Vec::from([blocks[selected.unwrap()].id]),
+                get_top_most_block_id_or_self(
+                    blocks,
+                    index_by_block_id(above_block.id, blocks).unwrap(),
+                ),
+                &mut Vec::from([block.id]),
             ) {
-                blocks[selected.unwrap()].possible_connection_above.set(None);
+                println!("Loop avoided");
                 return;
             } else {
                 // Save block, only if it is not a loop
-                blocks[selected.unwrap()]
-                    .possible_connection_above
-                    .set(possible);
+                block.possible_connection_above.set(Some(above_block.id));
             }
-            let above_block = &blocks[possible.unwrap()];
 
             if !is_block_visible_on_screen(
                 &above_block,
@@ -480,7 +516,7 @@ fn handle_connection_and_render_ghost_block(
                     + above_block.height.get() as isize,
                 camera,
                 buffer,
-                rgb_to_u32(100, 100, 100),
+                mirl::graphics::rgb_to_u32(100, 100, 100),
                 width,
                 height,
                 font,
@@ -526,7 +562,7 @@ fn render_block_internal(
         &block.name,
         (origin_x - camera.x) as usize,
         (origin_y - camera.y) as usize,
-        rgb_to_u32(255, 0, 0),
+        mirl::graphics::rgb_to_u32(255, 0, 0),
         20.0,
         font,
     );
@@ -623,7 +659,9 @@ fn handle_and_render_on_screen(
 
     // Reverse block order in order for overdraw to to its job in our favor
     for id in block_ids {
-        move_block_to_connected(blocks, &Some(id));
+        if blocks[id].recently_moved.get() {
+            move_block_to_connected(blocks, &Some(id));
+        }
         let block = &blocks[id];
 
         if !is_block_visible_on_screen(block, camera, &now_width, &now_height) {
@@ -888,7 +926,7 @@ fn add_item_to_max_sized_list(list: &mut Vec<u64>, max_size: usize, item: u64) {
     }
 }
 
-fn index_by_block_id(id: usize, blocks: &Vec<Block>) -> Option<usize> {
+fn index_by_block_id(id: ID, blocks: &Vec<Block>) -> Option<usize> {
     for block_id in 0..blocks.len() {
         if blocks[block_id].id == id {
             return Some(block_id);
@@ -899,25 +937,26 @@ fn index_by_block_id(id: usize, blocks: &Vec<Block>) -> Option<usize> {
 
 fn is_there_a_loop_in_block_connections_for_block(
     blocks: &Vec<Block>,
-    block_id: usize,
+    block_index: ID,
 ) -> bool {
     let mut already_checked = Vec::new();
     return is_there_a_loop_in_block_connections_for_block_internal(
         blocks,
-        block_id,
+        block_index,
         &mut already_checked,
     );
 }
 fn is_there_a_loop_in_block_connections_for_block_internal(
     blocks: &Vec<Block>,
-    block_index: usize,
-    already_checked: &mut Vec<usize>,
+    block_id: ID,
+    already_checked: &mut Vec<ID>,
 ) -> bool {
-    if already_checked.contains(&block_index) {
+    // I don't think this function works quite right
+    if already_checked.contains(&block_id) {
         return true;
     }
-    already_checked.push(block_index);
-    let block = &blocks[index_by_block_id(block_index, blocks).unwrap()];
+    already_checked.push(block_id);
+    let block = &blocks[index_by_block_id(block_id, blocks).unwrap()];
     if block.connected_below.get().is_some() {
         return is_there_a_loop_in_block_connections_for_block_internal(
             blocks,
@@ -934,25 +973,61 @@ fn is_there_a_loop_in_block_connections_for_block_internal(
     // }
     return false;
 }
-fn get_ids_connected_to_block(top: usize, blocks: &Vec<Block>) -> Vec<usize> {
-    let block = &blocks[index_by_block_id(top, &blocks).unwrap()];
-    let mut list = Vec::new();
-    list.push(top);
+fn custom_join(vector: Vec<ID>, separator: &str) -> String {
+    let mut out = "".to_string();
+    let length = vector.len();
+    for idx in 0..length {
+        let item = vector[idx].to_string();
+        out = out + &item;
+        if idx != length - 1 {
+            out = out + separator;
+        }
+    }
+    return out;
+}
+
+fn get_ids_connected_to_block(
+    top_most_block_id: ID,
+    blocks: &Vec<Block>,
+    found: &mut Vec<ID>,
+) -> Vec<ID> {
+    // FIX THIS FUNCTION FOR GOD SAKE WHY ARE THERE MUTLIPLE IDS??????????????????
+    let block = &blocks[index_by_block_id(top_most_block_id, &blocks).unwrap()];
+
+    if found.contains(&block.id) {
+        println!("{} -> {}", block.id, block.connected_below.get().unwrap());
+        panic!(
+            "Infinite loop found with these ids {} with current {} (len({}))",
+            custom_join(found.to_vec(), ", "),
+            top_most_block_id,
+            found.len()
+        )
+    }
+    found.push(top_most_block_id);
     if block.connected_below.get().is_some() {
-        list.extend(get_ids_connected_to_block(
+        let sub = get_ids_connected_to_block(
             block.connected_below.get().unwrap(),
             blocks,
-        ))
+            found,
+        );
+
+        found.extend(sub)
     }
-    return list;
+
+    // Filter out multiple of an id -> WE SHOULD NOT NEED TO DO THIS
+    let mut seen = std::collections::HashSet::new();
+
+    found.retain(|x| seen.insert(*x));
+
+    return found.to_vec();
 }
 fn index_by_block_ids(
     blocks: &Vec<Block>,
-    ids: Vec<usize>,
+    ids: &Vec<ID>,
 ) -> Vec<Option<usize>> {
     let mut return_list = Vec::new();
     for id in ids {
-        return_list.push(index_by_block_id(id, blocks))
+        return_list.push(index_by_block_id(*id, blocks))
     }
     return return_list;
 }
@@ -971,27 +1046,139 @@ fn get_total_height_of_blocks(
     }
     return height;
 }
+fn draw_circle(
+    buffer: *mut u32,
+    width: &usize,
+    height: &usize,
+    pos_x: usize,
+    pos_y: usize,
+    radius: isize,
+    color: u32,
+) {
+    let mut x = 0;
+    let mut y = 0 - radius;
+    let mut p = -radius;
 
-fn move_block_to_connected(blocks: &mut Vec<Block>, selected: &Option<usize>) {
-    if selected.is_none() {
+    while (x) < (-y) {
+        if p > 0 {
+            y += 1;
+            p += 2 * (x + y) + 1
+        } else {
+            p += 2 * x + 1
+        }
+        let temp_x = x as usize;
+        let temp_y = y as usize;
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x + temp_x,
+            pos_y + temp_y,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x - temp_x,
+            pos_y + temp_y,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x + temp_x,
+            pos_y - temp_y,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x - temp_x,
+            pos_y - temp_y,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x + temp_y,
+            pos_y + temp_x,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x + temp_y,
+            pos_y - temp_x,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x - temp_y,
+            pos_y + temp_x,
+            color,
+        );
+        draw_pixel(
+            buffer,
+            width,
+            height,
+            pos_x - temp_y,
+            pos_y - temp_x,
+            color,
+        );
+
+        x += 1
+    }
+}
+fn get_usize_out_of_option_list(list: Vec<Option<usize>>) -> Vec<usize> {
+    let mut new = Vec::new();
+    for l in list {
+        new.push(l.unwrap())
+    }
+    return new;
+}
+
+fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
+    if index.is_none() {
         return;
     }
-    let block = &blocks[selected.unwrap()];
+    let block = &blocks[index.unwrap()];
     let top_block_id = block.connected_top.get();
     if top_block_id.is_none() {
         return;
     }
     let top_block =
         &blocks[index_by_block_id(top_block_id.unwrap(), blocks).unwrap()];
-    let block_query = get_ids_connected_to_block(top_block_id.unwrap(), blocks);
+    let block_query = get_ids_connected_to_block(
+        top_block_id.unwrap(),
+        blocks,
+        &mut Vec::new(),
+    );
+    let own_block_id_index =
+        block_query.iter().position(|&id| id == block.id).unwrap();
+
+    let blocks_to_offset_with =
+        &block_query[0..own_block_id_index + 1].to_vec();
+
+    println!(">{:?}", block_query);
+
     let total_offset = get_total_height_of_blocks(
         blocks,
-        index_by_block_ids(blocks, block_query),
+        index_by_block_ids(blocks, blocks_to_offset_with),
     );
-    println!("{total_offset} {}", total_offset as u16 + top_block.y.get());
+    //println!("{total_offset} {}", total_offset as u16 + top_block.y.get());
 
     block.x.set(top_block.x.get());
-    block.y.set(total_offset as u16 + top_block.y.get());
+    block.y.set(
+        total_offset as u16 + top_block.y.get() - block.height.get() as u16,
+    );
+    block.recently_moved.set(false);
     // blocks[above_block.unwrap()].x.set(blocks[selected.unwrap()].x.get());
     // blocks[above_block.unwrap()].y.set(
     //     blocks[selected.unwrap()].y.get()
@@ -1015,7 +1202,10 @@ const FAST_LOGIC: bool = false; // No analytics
 
 // ------------------------------------------------------------------------------------------------
 
-static GLOBAL_BLOCK_COUNTER: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0));
+static GLOBAL_BLOCK_COUNTER: once_cell::sync::Lazy<Mutex<usize>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(0));
+
+// Reason everything is broken: Connections are not correctly updated, infinite loops crash, and I am tired
 
 fn main() {
     let width = 800;
@@ -1039,7 +1229,7 @@ fn main() {
     .expect("Unable to create window");
 
     #[cfg(target_os = "windows")]
-    window.set_icon(Icon::from_str("src/cot.ico").unwrap());
+    window.set_icon(Icon::from_str("src/idk.ico").unwrap());
 
     let target_frame_delta = mirl::time::MICROS_PER_SEC / max_fps; // Time for one frame at the target FPS
     let mut frame_start;
@@ -1069,7 +1259,7 @@ fn main() {
     let mut color_names: Vec<String> = Vec::new();
 
     //color_names.push("bool".to_string());
-    color_rgb.push(rgb_to_u32(50, 80, 255));
+    color_rgb.push(mirl::graphics::rgb_to_u32(50, 80, 255));
     color_names.push("bool".to_string());
     let font = file_system::load_font("src/inter.ttf");
 
@@ -1089,6 +1279,8 @@ fn main() {
             &font,
         ))
     }
+
+    let mut frame: u8 = 0;
 
     let mut last_mouse_down;
     let mut mouse_down_temp;
@@ -1111,6 +1303,8 @@ fn main() {
     while window.is_open() {
         frame_start = mirl::time::get_time();
         buffer = mirl::render::clear_screen(width, height);
+
+        frame += 1;
 
         let buffer_pointer: *mut u32 = buffer.as_mut_ptr();
 
@@ -1148,16 +1342,27 @@ fn main() {
                     );
                 }
                 if selected.is_some() {
-                    blocks[selected.unwrap()].connected_top.set(None);
                     let list = get_ids_connected_to_block(
-                        blocks[selected.unwrap()].id,
+                        get_top_most_block_id_or_self(
+                            &blocks,
+                            selected.unwrap(),
+                        ),
                         &blocks,
+                        &mut Vec::new(),
                     );
+                    // When this block is selected, disconnect it from the blocks above
+                    blocks[selected.unwrap()].connected_top.set(None);
+
                     // find position of element with value blocks[selected.unwrap()].id
                     let split_point = list.iter().position(|block| {
                         *block == blocks[selected.unwrap()].id
                     });
-                    split_point.unwrap();
+
+                    // "Split point" -> below gets moved, above stays put, split point is selected block
+                    if split_point.is_none() {
+                        panic!("The block thought it was hanging from a block structure that isn't actually connected to this block anymore (Currently happening when replacing a block)")
+                    }
+
                     if split_point.unwrap() > 0 {
                         // Remove the connected tag from the block this block is connected to (But only if that block above exists!)
                         let block_above = &blocks[index_by_block_id(
@@ -1168,7 +1373,7 @@ fn main() {
                         block_above.connected_below.set(None);
                     }
 
-                    // Move all blocks connected to the selected block
+                    // Tell blocks below that they have been moved
                     for id in list[split_point.unwrap()..].iter() {
                         blocks[index_by_block_id(*id, &blocks).unwrap()]
                             .recently_moved
@@ -1187,32 +1392,35 @@ fn main() {
                                 &blocks,
                                 get_top_most_block_id_or_self(
                                     &blocks,
-                                    blocks[selected.unwrap()]
+                                    index_by_block_id(block
                                         .possible_connection_above
                                         .get()
                                         .unwrap(),
+                                        &blocks).unwrap()
                                 ),
                                 &mut Vec::from([blocks[selected.unwrap()].id]),
                             ) {
                                 panic!("Loop detected");
                             }
+                        // Get above block
+                        let block_above_index =
+                            index_by_block_id(connection_id_above, &blocks)
+                                .unwrap();
+                        let above_block = &blocks[block_above_index];
                         // Tell current block to connect above
                         block.connected_top.set(Some(
                             get_top_most_block_id_or_self(
                                 &blocks,
-                                connection_id_above,
+                                block_above_index,
                             ),
                         ));
-                        // Get above block
-                        let above_block = &blocks[index_by_block_id(
-                            connection_id_above,
-                            &blocks,
-                        )
-                        .unwrap()];
+                        // WE CURRENTLY JUST REPLACE THE CURRENT BLOCK-> THESE BLOCKS SHOULD BE APPENDED TO THE CURRENT BLOCKS AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHHHHHHHHHHH
                         above_block.connected_below.set(Some(block.id));
-                        // Set current possible above block to none
-                        block.possible_connection_above.set(None)
                     }
+
+                    // Set current possible above block to none
+                    block.possible_connection_above.set(None);
+                    block.recently_moved.set(true);
                 }
                 selected = None;
             }
@@ -1233,6 +1441,8 @@ fn main() {
                     camera.y -= mouse_delta.1 as isize;
                 }
             }
+            let test = 1.0 / (200 - frame) as f32;
+            println!("{}", test);
 
             // Mouse wheel movement
             mouse_wheel_temp = window.get_scroll_wheel();
@@ -1269,6 +1479,7 @@ fn main() {
             }
         }
 
+        //println!("Before");
         //############################################
 
         handle_and_render_on_screen(
@@ -1291,6 +1502,16 @@ fn main() {
             snap_distance,
         );
 
+        draw_circle(
+            buffer_pointer,
+            &width,
+            &height,
+            mouse_pos.0 as usize,
+            mouse_pos.1 as usize,
+            8,
+            rgb_to_u32(100, 20, 200),
+        );
+        //println!("After");
         //############################################
         window
             .update_with_buffer(&buffer, width, height)
@@ -1304,7 +1525,7 @@ fn main() {
             fps = u64::MAX;
         }
 
-        add_item_to_max_sized_list(&mut fps_list, fps as usize, fps);
+        add_item_to_max_sized_list(&mut fps_list, fps as usize / 10, fps);
         if fps_list.len() == 0 {
             stable_fps = 0;
         } else {
@@ -1326,6 +1547,15 @@ fn main() {
             )
             .as_str(),
         );
+        if selected.is_some() {
+            let block = &blocks[selected.unwrap()];
+            println!("Block Index: {}, ID: {}, Connected bottom: {}, Connected top: {}, Possible connection below: {}, Possible Connection Above: {}", 
+            selected.unwrap(), block.id,
+            block.connected_below.get().map_or("None".to_string(), |id| id.to_string()),
+            block.connected_top.get().map_or("None".to_string(), |id| id.to_string()),
+            block.possible_connection_below.get().map_or("None".to_string(), |id| id.to_string()),
+            block.possible_connection_above.get().map_or("None".to_string(), |id| id.to_string()))
+        }
 
         if delta_time < target_frame_delta {
             let sleep_time: u64 = target_frame_delta - delta_time;
