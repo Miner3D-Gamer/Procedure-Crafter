@@ -4,30 +4,59 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-minifb = "0.28.0"
-mirl = "0.1.7"
-gl = "0.14"
-rand = "0.9.0"
+# Render letters
 fontdue = "0.9.3"
+# Only make specific attributes mutable
 once_cell = "1.18.0"
+# Load/Save procedures
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = "1.3"
+# Misc
+mirl = "0.1.11"
 
-log_calls = {path = "C:/personal/games/libraries/Rusty/log_calls"}
+
+# Native rendering
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+minifb = "0.28.0"
+getrandom = { version = "0.3" }
+
+# WASM/Web rendering
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "CanvasRenderingContext2d",
+    "HtmlCanvasElement",
+    "ImageData",
+    "Window",
+    "Document",
+    "Performance",
+] }
+
+#log_calls = {path = "C:/personal/games/libraries/Rusty/log_calls"}
 
 # allow overflows
 [profile.release]
 overflow-checks = false
-opt-level = 3         # Maximize optimizations for performance
-lto = "fat"            # Enable Link Time Optimization for better performance
-panic = "abort"        # Avoid extra code related to unwinding
-debug = false          # Disable debug info for faster compilation
-codegen-units = 1      # Reduces the number of code generation units, improving optimizations
-rpath = true           # Optimize dynamic linking (for faster loading)
+# opt-level = 3         # Maximize optimizations for performance
+# lto = "fat"            # Enable Link Time Optimization for better performance
+# panic = "abort"        # Avoid extra code related to unwinding
+# debug = false          # Disable debug info for faster compilation
+# codegen-units = 1      # Reduces the number of code generation units, improving optimizations
+# rpath = true           # Optimize dynamic linking (for faster loading)
+debug = true
 
 [profile.dev]
 overflow-checks = false
+rpath = true
 
 [profile.test]
 overflow-checks = false
 
 [profile.bench]
 overflow-checks = false
+
+
+# cargo install wasm-bindgen-cli --locked

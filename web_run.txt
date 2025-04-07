@@ -1,0 +1,6 @@
+$env:RUSTFLAGS='--cfg getrandom_backend=\"wasm_js\"'  # This line is not working when not executed manually
+cargo build --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/procedure_crafter.wasm --out-dir webout --target web
+cd .\\webout\\
+python3 -m http.server 8080
+cd ..
