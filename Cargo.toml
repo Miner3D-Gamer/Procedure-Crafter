@@ -58,5 +58,9 @@ overflow-checks = false
 [profile.bench]
 overflow-checks = false
 
+[features]
+default = ["fast_render", "fast_logic"]
+fast_render = []
+fast_logic = []
 
 # cargo install wasm-bindgen-cli --locked

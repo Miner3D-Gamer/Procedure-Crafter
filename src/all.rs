@@ -6,388 +6,18 @@
 // There is a line where the code keeps on erroring ->
 
 use core::panic;
-
 use fontdue::Font;
 use mirl::graphics::rgb_to_u32;
+use std::collections::HashMap;
 
-use std::cell::Cell;
-
-// Cell: Make attribute mutable while keeping the rest of the struct static
-
-use crate::custom_id::ID;
+use crate::idk::WorkSpace;
+use crate::logic::Physics;
 use crate::platform::shared::FileSystem;
+use crate::render::RenderSettings;
 
-struct Camera {
-    x: isize,
-    y: isize,
-    z: f32,
-}
-
-struct Block {
-    name: String,
-    internal_name: String,
-    x: Cell<u16>,
-    y: Cell<u16>,
-    width: Cell<f32>,
-    height: Cell<f32>,
-    block_type: u8,
-    // 0: Action, 1: Inline, 2: Hugging, 3: Event
-    required_imports: Vec<String>,
-    required_contexts: Vec<String>,
-    file_versions: Vec<String>,
-    file_locations: Vec<String>,
-    output: String,
-    inputs: Vec<BlockInput>,
-    block_color_id: usize,
-    id: ID,
-    connected_top: Cell<Option<ID>>,
-    connected_below: Cell<Option<ID>>,
-    possible_connection_above: Cell<Option<ID>>,
-    possible_connection_below: Cell<Option<ID>>,
-    recently_moved: Cell<bool>,
-}
-
-impl Block {
-    fn new(
-        name: String,
-        internal_name: String,
-        x: i16,
-        y: i16,
-        block_type: u8,
-        required_imports: Vec<String>,
-        required_contexts: Vec<String>,
-        file_versions: Vec<String>,
-        file_locations: Vec<String>,
-        output: String,
-        inputs: Vec<BlockInput>,
-        outuput_color_names: &Vec<String>,
-        font: &Font,
-    ) -> Block {
-        let color_id = outuput_color_names
-            .iter()
-            .position(|x| *x == output)
-            .expect("Could not find color name");
-        let x = ((u16::MAX / 2) as i16 + x) as u16;
-        let y = ((u16::MAX / 2) as i16 + y) as u16;
-
-        Block {
-            name: name.clone(),
-            internal_name: internal_name,
-            x: Cell::new(x),
-            y: Cell::new(y),
-            width: Cell::new(get_length_of_text_in_font(&name, &font)),
-            height: Cell::new(40.0),
-            block_type: block_type,
-            required_imports: required_imports,
-            required_contexts: required_contexts,
-            file_versions: file_versions,
-            file_locations: file_locations,
-            output: output,
-            inputs: inputs,
-            block_color_id: color_id,
-            id: increment_global_block_id().into(),
-            connected_top: Cell::new(None),
-            connected_below: Cell::new(None),
-            possible_connection_above: Cell::new(None),
-            possible_connection_below: Cell::new(None),
-            recently_moved: Cell::new(false),
-        }
-    }
-}
-
-struct BlockInput {
-    input_type: String,
-    name: String,
-    expected: Option<Vec<String>>,
-    expected_return: Option<Vec<String>>,
-}
-impl BlockInput {
-    fn new(
-        input_type: String,
-        name: String,
-        expected: Option<Vec<String>>,
-        expected_return: Option<Vec<String>>,
-    ) -> Result<Self, &'static str> {
-        if let (Some(ref e), Some(ref er)) = (&expected, &expected_return) {
-            if e.len() != er.len() {
-                return Err(
-                    "expected and expected_return must have the same length",
-                );
-            }
-        }
-
-        Ok(Self {
-            input_type,
-            name,
-            expected,
-            expected_return,
-        })
-    }
-}
-
-use fontdue::Metrics;
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::sync::Once;
-
-static INIT: Once = Once::new();
-static mut GLYPH_CACHE: Option<
-    RefCell<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>>,
-> = None;
-
-#[inline(always)]
-fn get_glyph_cache(
-) -> &'static RefCell<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>> {
-    unsafe {
-        INIT.call_once(|| {
-            GLYPH_CACHE = Some(RefCell::new(HashMap::new()));
-        });
-        GLYPH_CACHE.as_ref().unwrap()
-    }
-}
-#[inline(always)]
-fn round_float_key(value: f32) -> (i32, i32) {
-    let multiplier = 10000.0; // Provides 4 decimal places of precision
-    let rounded_int_x = (value * multiplier).round() as i32;
-    let rounded_int_y = (value * multiplier).fract() as i32;
-    (rounded_int_x, rounded_int_y)
-}
-
-// Drawing
-fn draw_text(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    text: &str,
-    x: usize,
-    y: usize,
-    color: u32,
-    size: f32,
-    font: &Font,
-) {
-    // This function takes like half the render time
-    if FAST_RENDER {
-        draw_text_no_blend(
-            buffer, width, height, text, x, y, color, size, font,
-        );
-    } else {
-        draw_text_blend(buffer, width, height, text, x, y, color, size, font);
-    }
-}
-
-fn draw_text_blend(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    text: &str,
-    x: usize,
-    y: usize,
-    color: u32,
-    size: f32,
-    font: &Font,
-) {
-    let mut pen_x = x;
-    let pen_y = y;
-
-    let rounded_size_key = round_float_key(size);
-    let font_metrics = font.horizontal_line_metrics(size).unwrap();
-
-    for ch in text.chars() {
-        // Try to get the glyph from cache first
-        let (metrics, bitmap) = {
-            let cache = get_glyph_cache().borrow();
-            cache.get(&(ch, rounded_size_key)).cloned()
-        }
-        .unwrap_or_else(|| {
-            let rasterized = font.rasterize(ch, size);
-
-            // Insert into cache
-            let mut cache_mut = get_glyph_cache().borrow_mut();
-            cache_mut.insert((ch, rounded_size_key), rasterized.clone());
-
-            rasterized
-        });
-
-        // Draw each character into the buffer
-        for gy in 0..metrics.height {
-            for gx in 0..metrics.width {
-                let px = pen_x + gx;
-                // Correcting for letter height
-                let py = pen_y
-                    + gy
-                    + (font_metrics.ascent - metrics.height as f32) as usize;
-
-                if px < *width && py < *height {
-                    let index = py * width + px;
-                    let alpha = bitmap[gy * metrics.width + gx]; // Alpha (0-255)
-
-                    if alpha > 0 {
-                        unsafe {
-                            let bg = *buffer.add(index);
-                            // Extract RGBA
-                            let (br, bg, bb, ba) = (
-                                (bg >> 24) & 0xFF,
-                                (bg >> 16) & 0xFF,
-                                (bg >> 8) & 0xFF,
-                                bg & 0xFF,
-                            );
-                            let (tr, tg, tb, ta) = (
-                                (color >> 24) & 0xFF,
-                                (color >> 16) & 0xFF,
-                                (color >> 8) & 0xFF,
-                                color & 0xFF,
-                            );
-
-                            // Alpha blending
-                            let inv_alpha: u8 = 255 - alpha;
-                            let nr = ((tr as u16 * alpha as u16
-                                + br as u16 * inv_alpha as u16)
-                                / 255)
-                                as u8;
-                            let ng = ((tg as u16 * alpha as u16
-                                + bg as u16 * inv_alpha as u16)
-                                / 255)
-                                as u8;
-                            let nb = ((tb as u16 * alpha as u16
-                                + bb as u16 * inv_alpha as u16)
-                                / 255)
-                                as u8;
-                            let na = ((ta as u16 * alpha as u16
-                                + ba as u16 * inv_alpha as u16)
-                                / 255)
-                                as u8;
-
-                            draw_pixel(
-                                buffer,
-                                width,
-                                height,
-                                px,
-                                py,
-                                (nr as u32) << 24
-                                    | (ng as u32) << 16
-                                    | (nb as u32) << 8
-                                    | na as u32,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Advance the cursor position
-        pen_x += metrics.advance_width as usize;
-    }
-}
-
-fn draw_text_no_blend(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    text: &str,
-    x: usize,
-    y: usize,
-    color: u32,
-    size: f32,
-    font: &Font,
-) {
-    let mut pen_x = x;
-    let pen_y = y;
-    let font_metrics = font.horizontal_line_metrics(size).unwrap();
-    let ascent = font_metrics.ascent as usize;
-
-    let rounded_size_key = round_float_key(size);
-
-    for ch in text.chars() {
-        // Try to get the glyph from cache first
-        let cached_glyph = {
-            let cache = get_glyph_cache().borrow();
-            cache.get(&(ch, rounded_size_key)).cloned()
-        };
-
-        // If not in cache, rasterize and insert
-        let (metrics, bitmap) = cached_glyph.unwrap_or_else(|| {
-            let rasterized = font.rasterize(ch, size);
-
-            // Insert into cache
-            let mut cache_mut = get_glyph_cache().borrow_mut();
-            cache_mut.insert((ch, rounded_size_key), rasterized.clone());
-
-            rasterized
-        });
-
-        let offset_y = ascent.saturating_sub(metrics.height);
-        let w = metrics.width;
-        let h = metrics.height;
-        let advance_x = metrics.advance_width as usize;
-
-        for gy in 0..h {
-            let py = pen_y + gy + offset_y;
-            if py >= *height {
-                continue;
-            }
-
-            let row_start = gy * w;
-            for gx in 0..w {
-                let px = pen_x + gx;
-                if px >= *width {
-                    continue;
-                }
-
-                if bitmap[row_start + gx] > 0 {
-                    draw_pixel(buffer, width, height, px, py, color);
-                }
-            }
-        }
-        pen_x += advance_x;
-    }
-}
-
-#[inline(always)]
-fn draw_pixel(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    x: usize,
-    y: usize,
-    color: u32,
-) {
-    if FAST_RENDER {
-        draw_pixel_unsafe(buffer, width, x, y, color);
-    } else {
-        draw_pixel_safe(buffer, width, height, x, y, color);
-    }
-}
-
-#[inline(always)]
-fn draw_pixel_safe(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    x: usize,
-    y: usize,
-    color: u32,
-) {
-    // if x < 0 || y < 0 {
-    //     return;
-    // }
-    if x >= *width || y >= *height {
-        return;
-    }
-    draw_pixel_unsafe(buffer, width, x, y, color);
-}
-
-#[inline(always)]
-fn draw_pixel_unsafe(
-    buffer: *mut u32,
-    width: &usize,
-    x: usize,
-    y: usize,
-    color: u32,
-) {
-    unsafe {
-        *buffer.add(y * width + x) = color;
-    }
-}
+use crate::custom::Block;
+use crate::custom::Camera;
+use crate::custom::ID;
 
 // if false {
 //     let found = get_pixel(buffer, width, height, x, y);
@@ -395,68 +25,46 @@ fn draw_pixel_unsafe(
 //         return;
 //     }
 // }
-#[inline(always)]
-fn get_pixel(
-    buffer: &Vec<u32>,
-    width: &isize,
-    height: &isize,
-    x: isize,
-    y: isize,
-) -> u32 {
-    if x < 0 || y < 0 {
-        return 0;
-    }
-    if x >= *width || y >= *height {
-        return 0;
-    }
-    let index = y * width + x;
-    return buffer[index as usize];
-}
-fn visible_tiles(
-    outer: (i32, i32, i32, i32),
-    holes: &[(i32, i32, i32, i32)],
-) -> HashSet<(i32, i32)> {
-    let (x0, y0, x1, y1) = outer;
-    let mut visible = HashSet::new();
+// #[inline(always)]
+// fn get_pixel(
+//     buffer: &Vec<u32>,
+//     width: &isize,
+//     height: &isize,
+//     x: isize,
+//     y: isize,
+// ) -> u32 {
+//     if x < 0 || y < 0 {
+//         return 0;
+//     }
+//     if x >= *width || y >= *height {
+//         return 0;
+//     }
+//     let index = y * width + x;
+//     return buffer[index as usize];
+// }
 
-    // Insert all tiles from the outer square
-    for y in y0..y1 {
-        for x in x0..x1 {
-            visible.insert((x, y));
-        }
-    }
-
-    // Remove tiles from each hole
-    for &(hx0, hy0, hx1, hy1) in holes {
-        for y in hy0..hy1 {
-            for x in hx0..hx1 {
-                visible.remove(&(x, y));
-            }
-        }
-    }
-
-    visible
-}
-
-fn render_block(
+fn render_block<R: RenderSettings, L: Physics>(
     block: &Block,
     camera: &Camera,
     buffer: *mut u32,
     block_colors: &Vec<u32>,
-    width: &isize,
-    height: &isize,
+    width: usize,
+    height: usize,
     font: &Font,
+    render_setting: &R,
+    physics: &L,
 ) {
-    render_block_internal(
+    render_setting.render_block(
         block,
         block.x.get() as isize,
         block.y.get() as isize,
         camera,
         buffer,
         block_colors[block.block_color_id],
-        &(*width as usize),
-        &(*height as usize),
+        width,
+        height,
         font,
+        physics,
     );
 }
 #[inline(always)]
@@ -469,7 +77,7 @@ fn get_top_most_block_id_or_self(blocks: &Vec<Block>, index: usize) -> ID {
     return block.id;
 }
 
-fn handle_connection_and_render_ghost_block(
+fn handle_connection_and_render_ghost_block<R: RenderSettings, L: Physics>(
     buffer: *mut u32,
     width: &usize,
     height: &usize,
@@ -478,10 +86,12 @@ fn handle_connection_and_render_ghost_block(
     font: &Font,
     selected: &Option<usize>,
     snap_distance: f32,
+    render_settings: &R,
+    physics: &L,
 ) {
     if selected.is_some() {
         // Connect to block above
-        let possible = get_closest_connection(
+        let possible = physics.get_block_in_distance(
             &blocks,
             blocks[selected.unwrap()].x.get() as f32,
             blocks[selected.unwrap()].y.get() as f32,
@@ -515,10 +125,11 @@ fn handle_connection_and_render_ghost_block(
                 camera,
                 &(*width as isize),
                 &(*height as isize),
+                physics,
             ) {
                 return;
             }
-            render_block_internal(
+            render_settings.render_block(
                 &above_block,
                 above_block.x.get() as isize,
                 above_block.y.get() as isize
@@ -526,103 +137,24 @@ fn handle_connection_and_render_ghost_block(
                 camera,
                 buffer,
                 mirl::graphics::rgb_to_u32(100, 100, 100),
-                width,
-                height,
+                *width,
+                *height,
                 font,
+                physics,
             );
         }
     }
-}
-fn is_in_any_hole(
-    x: isize,
-    y: isize,
-    holes: &[(isize, isize, isize, isize)],
-) -> bool {
-    for &(hx0, hy0, hx1, hy1) in holes {
-        if x >= hx0 && x < hx1 && y >= hy0 && y < hy1 {
-            return true;
-        }
-    }
-    false
-}
-fn render_block_internal(
-    block: &Block,
-    origin_x: isize,
-    origin_y: isize,
-    camera: &Camera,
-    buffer: *mut u32,
-    block_color: u32,
-    width: &usize,
-    height: &usize,
-    font: &Font,
-) {
-    // let block_x = block.x.get() as isize;
-    // let block_y = block.y.get() as isize;
-    // let block_w = block.width.get() as isize;
-    // let block_h = block.height.get() as isize;
-
-    // let to_draw = visible_tiles(
-    //     (
-    //         block_x as i32,
-    //         block_y as i32,
-    //         (block_x + block_w) as i32,
-    //         (block_y + block_h) as i32,
-    //     ),
-    //     &[],
-    // );
-
-    // for (x, y) in to_draw {
-    //     let screen_x = (x as isize - camera.x) as usize;
-    //     let screen_y = (y as isize - camera.y) as usize;
-
-    //     draw_pixel(buffer, width, height, screen_x, screen_y, block_color);
-    // }
-
-    let x0 = block.x.get() as isize;
-    let y0 = block.y.get() as isize;
-    let x1 = block.x.get() as isize + block.width.get() as isize;
-    let y1 = block.y.get() as isize + block.height.get() as isize;
-    let holes = &[(1, 1, 40, 20)];
-
-    for y in y0..y1 {
-        for x in x0..x1 {
-            // HOLES DO NOT MOVE WITH BLOCK -> FIX THAT FUTURE ME
-            if is_in_any_hole(x - camera.x, y - camera.y, holes) {
-                continue;
-            }
-
-            draw_pixel(
-                buffer,
-                width,
-                height,
-                (x - camera.x) as usize,
-                (y - camera.y) as usize,
-                block_color,
-            );
-        }
-    }
-
-    draw_text(
-        buffer,
-        &(*width as usize),
-        &(*height as usize),
-        &block.name,
-        (origin_x - camera.x) as usize,
-        (origin_y - camera.y) as usize,
-        mirl::graphics::rgb_to_u32(255, 0, 0),
-        20.0,
-        font,
-    );
 }
 
 #[inline(always)]
-fn is_block_visible_on_screen(
+fn is_block_visible_on_screen<L: Physics>(
     block: &Block,
     camera: &Camera,
     width: &isize,
     height: &isize,
+    logic: &L,
 ) -> bool {
-    return is_reqtuctangle_visible_on_screen(
+    return logic.is_reqtuctangle_visible_on_screen(
         block.x.get() as f32,
         block.y.get() as f32,
         block.width.get() as f32,
@@ -633,103 +165,8 @@ fn is_block_visible_on_screen(
     );
 }
 
-#[inline(always)]
-fn is_reqtuctangle_visible_on_screen(
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    camera: &Camera,
-    buffer_width: &isize,
-    buffer_height: &isize,
-) -> bool {
-    if FAST_LOGIC {
-        return is_reqtuctangle_visible_on_screen_cheap(
-            x,
-            y,
-            width,
-            height,
-            camera,
-            buffer_width,
-            buffer_height,
-        );
-    } else {
-        return is_reqtuctangle_visible_on_screen_expensive(
-            x,
-            y,
-            width,
-            height,
-            camera,
-            buffer_width,
-            buffer_height,
-        );
-    }
-}
-
-#[inline(always)]
-fn is_reqtuctangle_visible_on_screen_expensive(
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    camera: &Camera,
-    buffer_width: &isize,
-    buffer_height: &isize,
-) -> bool {
-    let cam_x = camera.x as f32;
-    let cam_y = camera.y as f32;
-    let cam_width = *buffer_width as f32;
-    let cam_height = *buffer_height as f32;
-    let x2 = x + width;
-    let y2 = y + height;
-    if is_point_in_requctangle(x, y, cam_x, cam_y, cam_width, cam_height) {
-        return true;
-    }
-    if is_point_in_requctangle(x2, y, cam_x, cam_y, cam_width, cam_height) {
-        return true;
-    }
-    if is_point_in_requctangle(x, y2, cam_x, cam_y, cam_width, cam_height) {
-        return true;
-    }
-    if is_point_in_requctangle(x2, y2, cam_x, cam_y, cam_width, cam_height) {
-        return true;
-    }
-    return false;
-}
-
-#[inline(always)]
-fn is_reqtuctangle_visible_on_screen_cheap(
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    camera: &Camera,
-    buffer_width: &isize,
-    buffer_height: &isize,
-) -> bool {
-    let cam_x = camera.x as f32;
-    let cam_y = camera.y as f32;
-    let cam_width = *buffer_width as f32;
-    let cam_height = *buffer_height as f32;
-    let x2 = x + width;
-    let y2 = y + height;
-    if !is_point_in_requctangle(x, y, cam_x, cam_y, cam_width, cam_height) {
-        return false;
-    }
-    if !is_point_in_requctangle(x2, y, cam_x, cam_y, cam_width, cam_height) {
-        return false;
-    }
-    if !is_point_in_requctangle(x, y2, cam_x, cam_y, cam_width, cam_height) {
-        return false;
-    }
-    if !is_point_in_requctangle(x2, y2, cam_x, cam_y, cam_width, cam_height) {
-        return false;
-    }
-    return true;
-}
-
 // Misc
-fn handle_and_render_on_screen(
+fn handle_and_render_on_screen<R: RenderSettings, L: Physics>(
     buffer: *mut u32,
     width: &usize,
     height: &usize,
@@ -737,6 +174,8 @@ fn handle_and_render_on_screen(
     blocks: &mut Vec<Block>,
     block_colors: &Vec<u32>,
     font: &Font,
+    render_settings: &R,
+    physics: &L,
 ) {
     let now_width = *width as isize;
     let now_height = *height as isize;
@@ -750,7 +189,13 @@ fn handle_and_render_on_screen(
         }
         let block = &blocks[id];
 
-        if !is_block_visible_on_screen(block, camera, &now_width, &now_height) {
+        if !is_block_visible_on_screen(
+            block,
+            camera,
+            &now_width,
+            &now_height,
+            physics,
+        ) {
             continue;
         }
         render_block(
@@ -758,9 +203,11 @@ fn handle_and_render_on_screen(
             camera,
             buffer,
             block_colors,
-            &now_width,
-            &now_height,
+            *width,
+            *height,
             font,
+            render_settings,
+            physics,
         );
     }
 }
@@ -775,58 +222,17 @@ fn reorder_element<T>(vec: &mut Vec<T>, from: usize, to: usize) {
         vec.insert(to, item)
     }
 }
-#[inline(always)]
-fn is_point_in_requctangle(
-    x: f32,
-    y: f32,
-    origin_x: f32,
-    origin_y: f32,
-    width: f32,
-    height: f32,
-) -> bool {
-    if x < origin_x {
-        return false;
-    }
-    if x > origin_x + width {
-        return false;
-    }
-    if y < origin_y {
-        return false;
-    }
-    if y > origin_y + height {
-        return false;
-    }
-    return true;
 
-    // let temp_x = x - origin_x;
-    // let temp_y = y - origin_y;
-    // if !(x > 0.0 && x < width) {
-    //     return false;
-    // }
-    // if !(y > 0.0 && y < height) {
-    //     return false;
-    // }
-
-    // return true;
-}
-
-fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
-    let mut length = 0.0;
-    for ch in text.chars() {
-        let (metrics, _) = font.rasterize(ch, 20.0);
-        length += metrics.advance_width;
-    }
-    return length;
-}
 // Block stuff
-fn get_block_id_above(
+fn get_block_id_above<L: Physics>(
     blocks: &Vec<Block>,
     pos_x: f32,
     pos_y: f32,
+    logic: &L,
 ) -> Option<usize> {
     for block_id in 0..blocks.len() {
         let block = &blocks[block_id];
-        if is_point_in_requctangle(
+        if logic.is_point_in_requctangle(
             pos_x,
             pos_y,
             block.x.get() as f32,
@@ -839,122 +245,16 @@ fn get_block_id_above(
     }
     return None;
 }
-fn get_closest_connection(
+
+fn get_block_id_under_point<L: Physics>(
     blocks: &Vec<Block>,
     pos_x: f32,
     pos_y: f32,
-    max_distance: f32,
-    blacklisted: Option<usize>,
-    top: bool,
-) -> Option<usize> {
-    if FAST_LOGIC {
-        return get_any_block_in_distance(
-            blocks,
-            pos_x,
-            pos_y,
-            max_distance,
-            blacklisted,
-            top,
-        );
-    } else {
-        get_closest_block_in_distance(
-            blocks,
-            pos_x,
-            pos_y,
-            max_distance,
-            blacklisted,
-            top,
-        )
-    }
-}
-
-fn get_closest_block_in_distance(
-    blocks: &[Block],
-    pos_x: f32,
-    pos_y: f32,
-    max_distance: f32,
-    blacklisted: Option<usize>,
-    top: bool,
-) -> Option<usize> {
-    let mut closest = None;
-    let mut min_distance = max_distance; // Start with max distance as the limit
-
-    for (block_id, block) in blocks.iter().enumerate() {
-        if blacklisted.is_some() {
-            if block_id == blacklisted.unwrap() {
-                continue;
-            }
-        }
-        let check_x;
-        let check_y;
-        if top {
-            check_x = block.x.get() as f32;
-            check_y = block.y.get() as f32;
-        } else {
-            check_x = block.x.get() as f32;
-            check_y = block.y.get() as f32 + block.height.get();
-        }
-        let distance = get_distance_between_positions(
-            pos_x,
-            pos_y,
-            check_x as f32,
-            check_y as f32,
-        );
-
-        if distance < min_distance {
-            min_distance = distance;
-            closest = Some(block_id); // Problem may be here
-        }
-    }
-
-    return closest;
-}
-fn get_any_block_in_distance(
-    blocks: &Vec<Block>,
-    pos_x: f32,
-    pos_y: f32,
-    max_distance: f32,
-    blacklisted: Option<usize>,
-    top: bool,
-) -> Option<usize> {
-    for block_id in 0..blocks.len() {
-        if blacklisted.is_some() {
-            if block_id == blacklisted.unwrap() {
-                continue;
-            }
-        }
-        let block = &blocks[block_id];
-        let check_x;
-        let check_y;
-        if top {
-            check_x = block.x.get() as f32;
-            check_y = block.y.get() as f32;
-        } else {
-            check_x = block.x.get() as f32;
-            check_y = block.y.get() as f32 + block.height.get();
-        }
-        if block.block_type == 0 {
-            if get_distance_between_positions(
-                pos_x,
-                pos_y,
-                check_x as f32,
-                check_y as f32,
-            ) < max_distance
-            {
-                return Some(block_id);
-            }
-        }
-    }
-    return None;
-}
-fn get_block_id_under_point(
-    blocks: &Vec<Block>,
-    pos_x: f32,
-    pos_y: f32,
+    logic: &L,
 ) -> Option<usize> {
     for block_id in 0..blocks.len() {
         let block = &blocks[block_id];
-        if is_point_in_requctangle(
+        if logic.is_point_in_requctangle(
             pos_x,
             pos_y,
             block.x.get() as f32,
@@ -968,47 +268,6 @@ fn get_block_id_under_point(
     return None;
 }
 
-// Global id counter
-#[inline(always)]
-fn get_global_block_id() -> usize {
-    return GLOBAL_BLOCK_COUNTER.lock().unwrap().clone();
-}
-#[inline(always)]
-fn increment_global_block_id() -> usize {
-    let mut counter = GLOBAL_BLOCK_COUNTER.lock().unwrap();
-    if *counter == usize::MAX {
-        panic!(
-            "Ran out of block ids -> tried to create more than {} blocks (Maximal value of usize, honestly impressive. Wait, isn't that like a petabyte of memory? How has your computer not crashed before this function call?)",
-            usize::MAX
-        );
-    }
-    *counter += 1;
-    return *counter;
-}
-
-#[inline(always)]
-fn get_distance_between_positions(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    if FAST_LOGIC {
-        return get_approx_distance(x1, y1, x2, y2);
-    } else {
-        return get_distance_between_positions_accurate(x1, y1, x2, y2);
-    }
-}
-#[inline(always)]
-fn get_distance_between_positions_accurate(
-    x1: f32,
-    y1: f32,
-    x2: f32,
-    y2: f32,
-) -> f32 {
-    return ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt();
-}
-#[inline(always)]
-fn get_approx_distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = (x1 - x2).abs();
-    let dy = (y1 - y2).abs();
-    dx.max(dy) + 0.41 * dx.min(dy)
-}
 fn add_item_to_max_sized_list(list: &mut Vec<u64>, max_size: usize, item: u64) {
     list.push(item);
     if list.len() < max_size {
@@ -1143,96 +402,7 @@ fn get_total_height_of_blocks(
     }
     return height;
 }
-fn draw_circle(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
-    pos_x: usize,
-    pos_y: usize,
-    radius: isize,
-    color: u32,
-) {
-    let mut x = 0;
-    let mut y = 0 - radius;
-    let mut p = -radius;
 
-    while (x) < (-y) {
-        if p > 0 {
-            y += 1;
-            p += 2 * (x + y) + 1
-        } else {
-            p += 2 * x + 1
-        }
-        let temp_x = x as usize;
-        let temp_y = y as usize;
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x + temp_x,
-            pos_y + temp_y,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x - temp_x,
-            pos_y + temp_y,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x + temp_x,
-            pos_y - temp_y,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x - temp_x,
-            pos_y - temp_y,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x + temp_y,
-            pos_y + temp_x,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x + temp_y,
-            pos_y - temp_x,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x - temp_y,
-            pos_y + temp_x,
-            color,
-        );
-        draw_pixel(
-            buffer,
-            width,
-            height,
-            pos_x - temp_y,
-            pos_y - temp_x,
-            color,
-        );
-
-        x += 1
-    }
-}
 fn get_usize_out_of_option_list(list: Vec<Option<usize>>) -> Vec<usize> {
     let mut new = Vec::new();
     for l in list {
@@ -1292,7 +462,7 @@ fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
     ((value2 - value1) / value1).abs() * 100.0
 }
 
-fn handle_selected_and_mouse<R: platform::shared::Framework>(
+fn handle_selected_and_mouse<R: platform::shared::Framework, L: Physics>(
     mouse_outside: bool,
     mouse_down: bool,
     last_mouse_down: bool,
@@ -1303,6 +473,7 @@ fn handle_selected_and_mouse<R: platform::shared::Framework>(
     framework: &R,
     scroll_multiplier: f32,
     selected: Option<usize>,
+    logic: &L,
 ) -> Option<usize> {
     // There are too many problems with dealing with null when the mouse is outside the window, so instead we just check if the mouse is with in the window :)
     let mut selected = selected;
@@ -1313,6 +484,7 @@ fn handle_selected_and_mouse<R: platform::shared::Framework>(
                     &blocks,
                     mouse_pos.0 + camera.x as f32,
                     mouse_pos.1 + camera.y as f32,
+                    logic,
                 );
             }
             if selected.is_some() {
@@ -1475,12 +647,13 @@ pub fn parse_translations(
 use csv::ReaderBuilder;
 use std::error::Error;
 
-fn load_blocks<F: FileSystem>(
+fn load_blocks<F: FileSystem, S: RenderSettings>(
     file_system: &F,
     block_output_types: &mut Vec<String>,
     block_output_colors: &mut Vec<u32>,
     translation: &mut HashMap<String, String>,
     font: &Font,
+    workspace: &mut WorkSpace<S>,
 ) -> Vec<Block> {
     let path =
         r"C:\personal\games\minecraft\Automated\generation_lib\procedures";
@@ -1562,6 +735,7 @@ fn load_blocks<F: FileSystem>(
                 Vec::new(),
                 block_output_types,
                 font,
+                workspace,
             );
             blocks.push(block);
         }
@@ -1572,6 +746,7 @@ fn load_blocks<F: FileSystem>(
 fn generate_random_color() -> u32 {
     return getrandom::u32().expect("Unable to generate random color");
 }
+
 // #[inline(always)]
 // fn title_case(s: &str) -> String {
 //     s.split_whitespace()
@@ -1594,29 +769,25 @@ fn generate_random_color() -> u32 {
 //     name = title_case(&name);
 //     return name;
 // }
+
 // Goal: Render 1000 Blocks at >=60 fps
-// ------------------------------------------< SETTINGS >------------------------------------------
-
-const FAST_RENDER: bool = true; // ~10% <-> ~40% Faster rendering
-const FAST_LOGIC: bool = false || FAST_RENDER; // Render methods depend on cheap logic
-
-// ------------------------------------------------------------------------------------------------
 // Current:
 // Optimized (10_000):
 // FAST_RENDER OFF: 18 fps
 // FAST_RENDER ON: 25 fps
-
-static GLOBAL_BLOCK_COUNTER: once_cell::sync::Lazy<std::sync::Mutex<usize>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(0));
 
 use crate::platform;
 
 pub fn main_loop<
     R: platform::shared::Framework,
     F: platform::shared::FileSystem,
+    S: RenderSettings,
+    L: Physics,
 >(
-    mut framework: R,
-    file_system: F,
+    framework: &mut R,
+    file_system: &F,
+    render_settings: &S,
+    logic: &L,
 ) {
     //platform::log("Entered main loop");
     let snap_distance = 70.0;
@@ -1651,12 +822,15 @@ pub fn main_loop<
 
     let mut translation = HashMap::new();
 
+    let mut workspace = WorkSpace::new(render_settings);
+
     blocks.extend(load_blocks(
-        &file_system,
+        file_system,
         &mut block_output_color_names,
         &mut block_output_color_rgb,
         &mut translation,
         &font,
+        &mut workspace,
     ));
     // for id in 0..1000 {
     //     blocks.push(Block::new(
@@ -1709,7 +883,7 @@ pub fn main_loop<
         mouse_pos = framework.get_mouse_position().unwrap_or(mouse_pos);
 
         mouse_delta = subtract_tuple(mouse_pos, mouse_delta);
-        mouse_outside = !is_point_in_requctangle(
+        mouse_outside = !logic.is_point_in_requctangle(
             mouse_pos.0,
             mouse_pos.1,
             0.0,
@@ -1730,9 +904,10 @@ pub fn main_loop<
             &mut camera,
             mouse_pos,
             mouse_delta,
-            &framework,
+            framework,
             scroll_multiplier,
             selected,
+            logic,
         );
 
         //############################################
@@ -1745,6 +920,8 @@ pub fn main_loop<
             &mut blocks,
             &block_output_color_rgb,
             &font,
+            render_settings,
+            logic,
         );
         handle_connection_and_render_ghost_block(
             buffer_pointer,
@@ -1755,11 +932,13 @@ pub fn main_loop<
             &font,
             &selected,
             snap_distance,
+            render_settings,
+            logic,
         );
         let mouse_size = 4;
         let mouse_size_half = mouse_size as f32 / 2.0;
 
-        if is_reqtuctangle_visible_on_screen(
+        if logic.is_reqtuctangle_visible_on_screen(
             mouse_pos.0 - mouse_size_half,
             mouse_pos.1 - mouse_size_half,
             mouse_size as f32,
@@ -1768,10 +947,10 @@ pub fn main_loop<
             &(width as isize),
             &(width as isize),
         ) {
-            draw_circle(
+            render_settings.draw_circle(
                 buffer_pointer,
-                &width,
-                &height,
+                width,
+                height,
                 mouse_pos.0 as usize,
                 mouse_pos.1 as usize,
                 mouse_size,

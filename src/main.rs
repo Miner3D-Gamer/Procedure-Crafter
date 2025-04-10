@@ -1,15 +1,21 @@
 #![allow(dead_code)]
+#![deny(clippy::needless_return)]
 // Web "works" but nothing is showing up
 mod all;
-mod custom_id;
+mod custom;
+mod idk;
+mod logic;
 mod platform;
+mod render;
 use all::main_loop;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    let renderer = platform::native::NativeFramework::new(800, 600, "TEST");
+    let mut renderer = platform::native::NativeFramework::new(800, 600, "TEST");
     let file_system = platform::native::NativeFileSystem::new();
-    main_loop(renderer, file_system);
+    let render_settings = render::RenderSettingsPretty::new();
+    let logic = logic::Logic::new();
+    main_loop(&mut renderer, &file_system, &render_settings, &logic);
 }
 
 #[cfg(target_arch = "wasm32")]
