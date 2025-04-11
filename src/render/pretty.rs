@@ -144,6 +144,50 @@ impl RenderSettings for RenderSettingsPretty {
     fn adjust_brightness(&self, color: u32, x: i32) -> u32 {
         adjust_brightness(color, x, BrightnessModel::LinearWeighted)
     }
+    fn desaturate(&self, color: u32, amount: f32) -> u32 {
+        let r = ((color >> 16) & 0xFF) as f32 / 255.0;
+        let g = ((color >> 8) & 0xFF) as f32 / 255.0;
+        let b = (color & 0xFF) as f32 / 255.0;
+
+        // Convert RGB to HSL
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let l = (max + min) / 2.0;
+
+        let s = if max == min {
+            0.0
+        } else if l < 0.5 {
+            (max - min) / (max + min)
+        } else {
+            (max - min) / (2.0 - max - min)
+        };
+
+        // Reduce saturation toward grayscale
+        let new_s = s * (1.0 - amount);
+
+        // Reconstruct color from HSL
+        let (r2, g2, b2) = hsl_to_rgb_f32(hue_of(r, g, b), new_s, l);
+        let r_new = (r2 * 255.0).round().clamp(0.0, 255.0) as u32;
+        let g_new = (g2 * 255.0).round().clamp(0.0, 255.0) as u32;
+        let b_new = (b2 * 255.0).round().clamp(0.0, 255.0) as u32;
+
+        (r_new << 16) | (g_new << 8) | b_new
+    }
+}
+
+fn hue_of(r: f32, g: f32, b: f32) -> f32 {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+
+    if max == min {
+        0.0
+    } else if max == r {
+        ((g - b) / (max - min)).rem_euclid(6.0) * 60.0
+    } else if max == g {
+        ((b - r) / (max - min) + 2.0) * 60.0
+    } else {
+        ((r - g) / (max - min) + 4.0) * 60.0
+    }
 }
 
 fn adjust_brightness_hsl(color: u32, x: i32) -> u32 {
@@ -160,12 +204,28 @@ fn adjust_brightness_hsl(color: u32, x: i32) -> u32 {
     let l_new = (l + x as f32).clamp(0.0, 100.0);
 
     // Convert back to RGB
-    let (r_new, g_new, b_new) = hsl_to_rgb(h, s, l_new);
+    let (r_new, g_new, b_new) = hsl_to_rgb_u32(h, s, l_new);
 
     // Recombine with alpha
     (a << 24) | (r_new << 16) | (g_new << 8) | b_new
 }
+fn hsl_to_rgb_f32(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
 
+    let (r1, g1, b1) = match h as i32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        300..=359 => (c, 0.0, x),
+        _ => (0.0, 0.0, 0.0),
+    };
+
+    (r1 + m, g1 + m, b1 + m)
+}
 /// Helper function to convert RGB to HSL color space
 /// Returns (hue, saturation, lightness) as (degrees, percentage, percentage)
 fn rgb_to_hsl(r: u32, g: u32, b: u32) -> (f32, f32, f32) {
@@ -209,7 +269,7 @@ fn rgb_to_hsl(r: u32, g: u32, b: u32) -> (f32, f32, f32) {
 /// Helper function to convert HSL to RGB color space
 /// Takes (hue, saturation, lightness) as (degrees, percentage, percentage)
 /// Returns (r, g, b) as u32 values in range 0-255
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u32, u32, u32) {
+fn hsl_to_rgb_u32(h: f32, s: f32, l: f32) -> (u32, u32, u32) {
     // Normalize inputs to 0-1 range
     let h_norm = h / 360.0;
     let s_norm = s / 100.0;

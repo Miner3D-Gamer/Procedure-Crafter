@@ -1,3 +1,5 @@
+use super::file_data::FileData;
+
 pub trait Framework {
     fn update(&mut self, buffer: &[u32]);
     fn is_open(&self) -> bool;
@@ -9,13 +11,25 @@ pub trait Framework {
     fn set_title(&mut self, title: &str);
     fn get_time(&self) -> Box<dyn Time>; // This allows for the implementation of Time to be returned as traits cannot be returned
     fn wait(&self, time: u64);
+    fn set_target_fps(&mut self, fps: usize);
+    fn set_always_ontop(&mut self, always_ontop: bool);
+    fn set_position(&mut self, x: isize, y: isize);
+    fn get_position(&self) -> (isize, isize);
+    fn move_window(&mut self, x: isize, y: isize) {
+        let current = self.get_position();
+        self.set_position(current.0 + x, current.1 + y);
+    }
+    fn set_icon(&mut self, buffer: &[u32], width: u32, height: u32);
 }
 pub trait Time {
     fn get_elapsed_time(&self) -> u64; // Get time in milliseconds
 }
 
 pub trait FileSystem {
-    fn get_file_contents(&self, path: &str) -> String;
+    fn get_file_contents(
+        &self,
+        path: &str,
+    ) -> Result<FileData, Box<dyn std::error::Error>>;
     fn write_to_file(&self, path: &str, contents: &str);
     fn get_files_in_folder(&self, path: &str) -> Vec<String>;
     fn get_folders_in_folder(&self, path: &str) -> Vec<String>;

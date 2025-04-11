@@ -1,12 +1,11 @@
 #![allow(dead_code)]
 #![deny(clippy::needless_return)]
 // Web "works" but nothing is showing up
-mod all;
-mod custom;
-mod idk;
-mod logic;
-mod platform;
-mod render;
+mod all; // Main loop
+mod custom; // Wprkspace/Blocks/Camera
+mod logic; // 'Physics'
+mod platform; // Output renderer
+mod render; // Internal renderer
 use all::main_loop;
 
 #[cfg(not(target_arch = "wasm32"))]

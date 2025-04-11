@@ -264,6 +264,26 @@ pub trait RenderSettings {
         // Recombine into a single color value
         (r_new << 16) | (g_new << 8) | b_new
     }
+    fn desaturate(&self, color: u32, amount: f32) -> u32 {
+        // Extract color components
+        let r = ((color >> 16) & 0xFF) as f32;
+        let g = ((color >> 8) & 0xFF) as f32;
+        let b = (color & 0xFF) as f32;
+
+        // Compute grayscale (luminance approximation)
+        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Interpolate between color and gray based on amount (0.0 to 1.0)
+        let r_new =
+            ((r * (1.0 - amount)) + (gray * amount)).clamp(0.0, 255.0) as u32;
+        let g_new =
+            ((g * (1.0 - amount)) + (gray * amount)).clamp(0.0, 255.0) as u32;
+        let b_new =
+            ((b * (1.0 - amount)) + (gray * amount)).clamp(0.0, 255.0) as u32;
+
+        // Recombine
+        (r_new << 16) | (g_new << 8) | b_new
+    }
 }
 
 //#[cfg(not(feature = "fast_render"))]

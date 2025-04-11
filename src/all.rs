@@ -10,7 +10,7 @@ use fontdue::Font;
 use mirl::graphics::rgb_to_u32;
 use std::collections::HashMap;
 
-use crate::idk::WorkSpace;
+use crate::custom::WorkSpace;
 use crate::logic::Physics;
 use crate::platform::shared::FileSystem;
 use crate::render::RenderSettings;
@@ -87,11 +87,12 @@ fn handle_connection_and_render_ghost_block<R: RenderSettings, L: Physics>(
     selected: &Option<usize>,
     snap_distance: f32,
     render_settings: &R,
-    physics: &L,
+    logic: &L,
+    block_colors: &Vec<u32>,
 ) {
     if selected.is_some() {
         // Connect to block above
-        let possible = physics.get_block_in_distance(
+        let possible = logic.get_block_in_distance(
             &blocks,
             blocks[selected.unwrap()].x.get() as f32,
             blocks[selected.unwrap()].y.get() as f32,
@@ -116,16 +117,15 @@ fn handle_connection_and_render_ghost_block<R: RenderSettings, L: Physics>(
                 //println!("Loop avoided");
                 return;
             } else {
-                // Save block, only if it is not a loop
+                // Save block, only if it is not in a loop
                 block.possible_connection_above.set(Some(above_block.id));
             }
 
-            if !is_block_visible_on_screen(
+            if !logic.is_block_visible_on_screen(
                 &above_block,
                 camera,
                 &(*width as isize),
                 &(*height as isize),
-                physics,
             ) {
                 return;
             }
@@ -136,33 +136,20 @@ fn handle_connection_and_render_ghost_block<R: RenderSettings, L: Physics>(
                     + above_block.height.get() as isize,
                 camera,
                 buffer,
-                mirl::graphics::rgb_to_u32(100, 100, 100),
+                render_settings.desaturate(
+                    render_settings.adjust_brightness(
+                        block_colors[block.block_color_id],
+                        -5,
+                    ),
+                    0.91,
+                ),
                 *width,
                 *height,
                 font,
-                physics,
+                logic,
             );
         }
     }
-}
-
-#[inline(always)]
-fn is_block_visible_on_screen<L: Physics>(
-    block: &Block,
-    camera: &Camera,
-    width: &isize,
-    height: &isize,
-    logic: &L,
-) -> bool {
-    return logic.is_reqtuctangle_visible_on_screen(
-        block.x.get() as f32,
-        block.y.get() as f32,
-        block.width.get() as f32,
-        block.height.get() as f32,
-        camera,
-        width,
-        height,
-    );
 }
 
 // Misc
@@ -175,7 +162,7 @@ fn handle_and_render_on_screen<R: RenderSettings, L: Physics>(
     block_colors: &Vec<u32>,
     font: &Font,
     render_settings: &R,
-    physics: &L,
+    logic: &L,
 ) {
     let now_width = *width as isize;
     let now_height = *height as isize;
@@ -189,12 +176,11 @@ fn handle_and_render_on_screen<R: RenderSettings, L: Physics>(
         }
         let block = &blocks[id];
 
-        if !is_block_visible_on_screen(
+        if !logic.is_block_visible_on_screen(
             block,
             camera,
             &now_width,
             &now_height,
-            physics,
         ) {
             continue;
         }
@@ -207,7 +193,7 @@ fn handle_and_render_on_screen<R: RenderSettings, L: Physics>(
             *height,
             font,
             render_settings,
-            physics,
+            logic,
         );
     }
 }
@@ -462,7 +448,7 @@ fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
     ((value2 - value1) / value1).abs() * 100.0
 }
 
-fn handle_selected_and_mouse<R: platform::shared::Framework, L: Physics>(
+fn handle_selected_and_mouse<F: platform::shared::Framework, L: Physics>(
     mouse_outside: bool,
     mouse_down: bool,
     last_mouse_down: bool,
@@ -470,7 +456,7 @@ fn handle_selected_and_mouse<R: platform::shared::Framework, L: Physics>(
     camera: &mut Camera,
     mouse_pos: (f32, f32),
     mouse_delta: (f32, f32),
-    framework: &R,
+    framework: &F,
     scroll_multiplier: f32,
     selected: Option<usize>,
     logic: &L,
@@ -667,9 +653,12 @@ fn load_blocks<F: FileSystem, S: RenderSettings>(
         let translation_file =
             file_system.join(&plugin_path, "translation.csv");
 
-        let translation_data = file_system.get_file_contents(&translation_file);
+        let translation_data =
+            file_system.get_file_contents(&translation_file).unwrap();
         let extracted =
-            parse_translations(&translation_data, "en").unwrap().unwrap();
+            parse_translations(&translation_data.as_string().unwrap(), "en")
+                .unwrap()
+                .unwrap();
 
         for i in 0..extracted.0.len() {
             translation.insert(extracted.0[i].clone(), extracted.1[i].clone());
@@ -677,9 +666,14 @@ fn load_blocks<F: FileSystem, S: RenderSettings>(
         // translation_keys.extend(extracted.0);
         // translation_values.extend(extracted.1);
 
-        let settings_json: serde_json::Value =
-            serde_json::from_str(&file_system.get_file_contents(&setting_file))
-                .expect("Unable to load json settings file");
+        let settings_json: serde_json::Value = serde_json::from_str(
+            &file_system
+                .get_file_contents(&setting_file)
+                .unwrap()
+                .as_string()
+                .unwrap(),
+        )
+        .expect("Unable to load json settings file");
         let pre_blocks = settings_json
             .get("blocks")
             .ok_or("Error")
@@ -779,16 +773,24 @@ fn generate_random_color() -> u32 {
 use crate::platform;
 
 pub fn main_loop<
-    R: platform::shared::Framework,
-    F: platform::shared::FileSystem,
+    F: platform::shared::Framework,
+    D: platform::shared::FileSystem,
     S: RenderSettings,
     L: Physics,
 >(
-    framework: &mut R,
-    file_system: &F,
+    framework: &mut F,
+    file_system: &D,
     render_settings: &S,
     logic: &L,
 ) {
+    let icon = file_system
+        .get_file_contents("src/idk.ico")
+        .unwrap()
+        .as_image()
+        .unwrap();
+    framework.set_icon(&icon.0, icon.1, icon.2);
+    println!("{:?}", icon.1);
+
     //platform::log("Entered main loop");
     let snap_distance = 70.0;
     let scroll_multiplier = 5.0;
@@ -934,6 +936,7 @@ pub fn main_loop<
             snap_distance,
             render_settings,
             logic,
+            &block_output_color_rgb,
         );
         let mouse_size = 4;
         let mouse_size_half = mouse_size as f32 / 2.0;

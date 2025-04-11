@@ -1,9 +1,12 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use crate::platform::shared::{Framework, KeyCode, MouseButton};
 use minifb::{Window, WindowOptions};
 
-use super::shared::{FileSystem, Time};
+use super::{
+    file_data::FileData,
+    shared::{FileSystem, Time},
+};
 
 pub fn log(s: &str) {
     println!("{}", s);
@@ -79,6 +82,70 @@ impl Framework for NativeFramework {
     fn wait(&self, time: u64) {
         std::thread::sleep(Duration::from_millis(time));
     }
+    fn set_target_fps(&mut self, fps: usize) {
+        self.window.set_target_fps(fps);
+    }
+    fn set_always_ontop(&mut self, always_ontop: bool) {
+        self.window.topmost(always_ontop);
+    }
+    fn set_position(&mut self, x: isize, y: isize) {
+        self.window.set_position(x, y);
+    }
+    fn get_position(&self) -> (isize, isize) {
+        self.window.get_position()
+    }
+    fn set_icon(&mut self, buffer: &[u32], width: u32, height: u32) {
+        // assert_eq!(
+        //     buffer.len(),
+        //     (width * height) as usize,
+        //     "Buffer size doesn't match dimensions"
+        // );
+        // let buffer64: Vec<u64> = buffer.iter().map(|&x| x as u64).collect();
+
+        // let boxed_buffer = buffer64.into_boxed_slice();
+
+        // // Leak the memory (intentionally) so it persists for the lifetime of the application or whatever the hell that means
+        // let leaked_buffer = Box::leak(boxed_buffer);
+
+        // let icon = minifb::Icon::Buffer(
+        //     leaked_buffer.as_ptr(),
+        //     leaked_buffer.len() as u32,
+        // );
+        // self.window.set_icon(icon);
+        #[cfg(target_os = "windows")]
+        {
+            let ico_data = encode_to_ico_format(buffer, width, height);
+
+            let temp_dir = std::env::temp_dir();
+            let ico_path = temp_dir.join("temp_icon.ico");
+
+            std::fs::write(&ico_path, &ico_data)
+                .expect("Failed to write temporary icon file");
+
+            self.window.set_icon(
+                minifb::Icon::from_str(ico_path.to_str().unwrap()).unwrap(),
+            );
+        }
+
+        // For non-Windows platforms, try the buffer approach
+        #[cfg(not(target_os = "windows"))]
+        {
+            let buffer64: Vec<u64> = buffer.iter().map(|&x| x as u64).collect();
+            let boxed_buffer = buffer64.into_boxed_slice();
+            let leaked_buffer = Box::leak(boxed_buffer);
+
+            // Different platforms might expect different Icon constructor signatures
+            // You might need to check minifb source to see exact parameters needed
+            let icon = minifb::Icon::Buffer(
+                leaked_buffer.as_ptr(),
+                leaked_buffer.len() as u32,
+                width,
+                height,
+            );
+
+            self.window.set_icon(icon);
+        }
+    }
 }
 
 pub struct NativeTime {
@@ -96,17 +163,66 @@ pub const fn from_micros_u128(micros: u128) -> std::time::Duration {
 
     std::time::Duration::new(secs, nanos)
 }
+fn encode_to_ico_format(buffer: &[u32], width: u32, height: u32) -> Vec<u8> {
+    use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
 
+    // Create a new icon directory
+    let mut icon_dir = IconDir::new(ResourceType::Icon);
+
+    // Convert the RGBA u32 buffer to a Vec<u8> in BGRA format
+    // Windows .ico format typically expects BGRA ordering
+    let mut image_data = Vec::with_capacity(buffer.len() * 4);
+
+    for &pixel in buffer {
+        // Extract RGBA components from u32
+        let r = ((pixel >> 16) & 0xFF) as u8;
+        let g = ((pixel >> 8) & 0xFF) as u8;
+        let b = (pixel & 0xFF) as u8;
+        let _a = ((pixel >> 24) & 0xFF) as u8; // ALPHA IS NOT READ CORRECTLY -> IT'S ALWAYS 0
+        println!("Fix alpha channel not being read correctly");
+
+        // Push as BGRA
+        image_data.push(b);
+        image_data.push(g);
+        image_data.push(r);
+        image_data.push(255);
+    }
+
+    // Create icon image with proper transparency
+    let icon_image = IconImage::from_rgba_data(width, height, image_data);
+
+    // Add the image to the icon directory
+    icon_dir.add_entry(
+        IconDirEntry::encode(&icon_image).expect("Failed to encode icon image"),
+    );
+
+    // Encode the icon directory to a Vec<u8>
+    let mut ico_data = Vec::new();
+    icon_dir.write(&mut ico_data).expect("Failed to write icon data");
+
+    ico_data
+}
 pub struct NativeFileSystem {}
 impl NativeFileSystem {
     pub fn new() -> Self {
         Self {}
     }
 }
+use std::io::Read;
+
 impl FileSystem for NativeFileSystem {
-    fn get_file_contents(&self, path: &str) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
+    fn get_file_contents(
+        &self,
+        path: &str,
+    ) -> Result<FileData, Box<dyn std::error::Error>> {
+        let mut file = std::fs::File::open(path)?;
+
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+
+        Ok(FileData::from_bytes(buffer))
     }
+
     fn write_to_file(&self, path: &str, contents: &str) {
         std::fs::write(path, contents).expect("Failed to write file");
     }

@@ -54,6 +54,23 @@ pub trait Physics {
         x2: f32,
         y2: f32,
     ) -> f32;
+    fn is_block_visible_on_screen(
+        &self,
+        block: &Block,
+        camera: &Camera,
+        width: &isize,
+        height: &isize,
+    ) -> bool {
+        return self.is_reqtuctangle_visible_on_screen(
+            block.x.get() as f32,
+            block.y.get() as f32,
+            block.width.get() as f32,
+            block.height.get() as f32,
+            camera,
+            width,
+            height,
+        );
+    }
 }
 
 #[cfg(any(feature = "fast_render", feature = "fast_logic"))]
