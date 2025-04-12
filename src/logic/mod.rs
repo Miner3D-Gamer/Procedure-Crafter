@@ -73,21 +73,16 @@ pub trait Physics {
     }
 }
 
-#[cfg(any(feature = "fast_render", feature = "fast_logic"))]
 mod fast;
+pub use fast::LogicFast;
 
-#[cfg(any(feature = "fast_render", feature = "fast_logic"))]
-pub use fast::LogicFast as Logic;
-
-#[cfg(not(any(feature = "fast_render", feature = "fast_logic")))]
 mod accurate;
-
-#[cfg(not(any(feature = "fast_render", feature = "fast_logic")))]
-pub use accurate::LogicAccurate as Logic;
+pub use accurate::LogicAccurate;
 
 use crate::custom::{Block, Camera};
 
 const _: fn() = || {
     fn assert_impl<T: Physics>() {}
-    assert_impl::<Logic>();
+    assert_impl::<LogicFast>();
+    assert_impl::<LogicAccurate>();
 };

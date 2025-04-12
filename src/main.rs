@@ -12,9 +12,8 @@ use all::main_loop;
 fn main() {
     let mut renderer = platform::native::NativeFramework::new(800, 600, "TEST");
     let file_system = platform::native::NativeFileSystem::new();
-    let render_settings = render::RenderSettingsPretty::new();
-    let logic = logic::Logic::new();
-    main_loop(&mut renderer, &file_system, &render_settings, &logic);
+
+    main_loop(&mut renderer, &file_system);
 }
 
 #[cfg(target_arch = "wasm32")]

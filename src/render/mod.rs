@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use crate::custom::Block;
 use crate::custom::Camera;
 use crate::logic::Physics;
@@ -12,13 +14,13 @@ static GLYPH_CACHE: Lazy<
     RwLock<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>>,
 > = Lazy::new(|| RwLock::new(HashMap::new()));
 
-#[inline(always)]
+#[inline]
 fn get_glyph_cache(
 ) -> &'static RwLock<HashMap<(char, (i32, i32)), (Metrics, Vec<u8>)>> {
     &GLYPH_CACHE
 }
 
-#[inline(always)]
+#[inline]
 fn round_float_key(value: f32) -> (i32, i32) {
     let multiplier = 10.0_f32.powi(4);
     let rounded_int_x = (value * multiplier).round() as i32;
@@ -27,6 +29,7 @@ fn round_float_key(value: f32) -> (i32, i32) {
 }
 
 pub trait RenderSettings {
+    #[inline]
     fn draw_pixel(
         &self,
         buffer: *mut u32,
@@ -40,6 +43,7 @@ pub trait RenderSettings {
             *buffer.add(y * width + x) = color;
         }
     }
+    #[inline]
     fn draw_text(
         &self,
         buffer: *mut u32,
@@ -103,7 +107,8 @@ pub trait RenderSettings {
             pen_x += advance_x;
         }
     }
-    fn render_block<L: Physics>(
+    #[inline]
+    fn draw_block<L: Physics>(
         &self,
         block: &Block,
         origin_x: isize,
@@ -114,28 +119,16 @@ pub trait RenderSettings {
         width: usize,
         height: usize,
         font: &Font,
-        logic: &L,
+        _logic: &L,
     ) {
-        let x0 = block.x.get() as isize;
-        let y0 = block.y.get() as isize;
-        let x1 = block.x.get() as isize + block.width.get() as isize;
-        let y1 = block.y.get() as isize + block.height.get() as isize;
-        let holes = &[(1, 1, 40, 20)];
+        let x0 = origin_x;
+        let y0 = origin_y;
+        let x1 = origin_x + block.width.get() as isize;
+        let y1 = origin_y + block.height.get() as isize;
+        // let holes = &[(1, 1, 40, 20)];
 
         for y in y0..y1 {
             for x in x0..x1 {
-                if logic.is_in_any_hole(x - x0, y - y0, holes) {
-                    self.draw_pixel(
-                        buffer,
-                        width,
-                        height,
-                        (x - camera.x) as usize,
-                        (y - camera.y) as usize,
-                        self.adjust_brightness(block_color, 50),
-                    );
-                    continue;
-                }
-
                 self.draw_pixel(
                     buffer,
                     width,
@@ -146,19 +139,66 @@ pub trait RenderSettings {
                 );
             }
         }
+        let last_index = block.input_offsets.len() - 1;
+        let indexes = 0..last_index;
+        let mut offset = 0.0;
+        let mut start = x0;
 
+        for i in indexes.clone() {
+            self.draw_text(
+                buffer,
+                width,
+                height,
+                &block.name[i],
+                (origin_x - camera.x) as usize + offset as usize,
+                (origin_y - camera.y) as usize,
+                mirl::graphics::rgb_to_u32(255, 0, 0),
+                20.0,
+                font,
+            );
+            start += block.input_offsets[i] as isize;
+            let input_width = block.inputs[i].get_width(font);
+            offset += input_width + block.input_offsets[i];
+
+            for x in start..start + input_width as isize {
+                for y in y0 + 3..y1 - 3 {
+                    self.draw_pixel(
+                        buffer,
+                        width,
+                        height,
+                        (x - camera.x) as usize,
+                        (y - camera.y) as usize,
+                        self.adjust_brightness(block_color, 50),
+                    )
+                }
+            }
+            start += input_width as isize;
+        }
         self.draw_text(
             buffer,
             width,
             height,
-            &block.name,
-            (origin_x - camera.x) as usize,
+            &block.name[last_index],
+            (origin_x - camera.x) as usize + offset as usize,
             (origin_y - camera.y) as usize,
             mirl::graphics::rgb_to_u32(255, 0, 0),
             20.0,
             font,
         );
+
+        // self.draw_text(
+        //     buffer,
+        //     width,
+        //     height,
+        //     &block.name[last_index],
+        //     (origin_x - camera.x) as usize + offset as usize,
+        //     (origin_y - camera.y) as usize,
+        //     mirl::graphics::rgb_to_u32(255, 0, 0),
+        //     20.0,
+        //     font,
+        // );
     }
+    #[inline]
     fn draw_circle(
         &self,
         buffer: *mut u32,
@@ -250,6 +290,7 @@ pub trait RenderSettings {
             x += 1
         }
     }
+    #[inline]
     fn adjust_brightness(&self, color: u32, x: i32) -> u32 {
         // Extract color components
         let r = ((color >> 16) & 0xFF) as i32;
@@ -264,6 +305,7 @@ pub trait RenderSettings {
         // Recombine into a single color value
         (r_new << 16) | (g_new << 8) | b_new
     }
+    #[inline]
     fn desaturate(&self, color: u32, amount: f32) -> u32 {
         // Extract color components
         let r = ((color >> 16) & 0xFF) as f32;
@@ -292,6 +334,6 @@ pub mod pretty;
 pub use pretty::RenderSettingsPretty;
 
 // //#[cfg(feature = "fast_render")]
-// pub mod fast;
+pub mod fast;
 // //#[cfg(feature = "fast_render")]
-// pub use fast::RenderSettingsFast;
+pub use fast::RenderSettingsFast;

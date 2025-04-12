@@ -5,7 +5,7 @@ use crate::render::get_glyph_cache;
 
 pub struct RenderSettingsPretty {}
 
-#[inline(always)]
+#[inline]
 fn round_float_key(value: f32) -> (i32, i32) {
     let multiplier = 10000.0; // Provides 4 decimal places of precision
     let rounded_int_x = (value * multiplier).round() as i32;
@@ -19,6 +19,7 @@ impl RenderSettingsPretty {
 }
 
 impl RenderSettings for RenderSettingsPretty {
+    #[inline]
     fn draw_pixel(
         &self,
         buffer: *mut u32,
@@ -36,6 +37,7 @@ impl RenderSettings for RenderSettingsPretty {
             *buffer.add(y * width + x) = color;
         }
     }
+    #[inline]
     fn draw_text(
         &self,
         buffer: *mut u32,
@@ -141,9 +143,11 @@ impl RenderSettings for RenderSettingsPretty {
             pen_x += metrics.advance_width as usize;
         }
     }
+    #[inline]
     fn adjust_brightness(&self, color: u32, x: i32) -> u32 {
         adjust_brightness(color, x, BrightnessModel::LinearWeighted)
     }
+    #[inline]
     fn desaturate(&self, color: u32, amount: f32) -> u32 {
         let r = ((color >> 16) & 0xFF) as f32 / 255.0;
         let g = ((color >> 8) & 0xFF) as f32 / 255.0;
@@ -175,6 +179,7 @@ impl RenderSettings for RenderSettingsPretty {
     }
 }
 
+#[inline]
 fn hue_of(r: f32, g: f32, b: f32) -> f32 {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -190,6 +195,7 @@ fn hue_of(r: f32, g: f32, b: f32) -> f32 {
     }
 }
 
+#[inline]
 fn adjust_brightness_hsl(color: u32, x: i32) -> u32 {
     // Extract components
     let a = (color >> 24) & 0xFF;
@@ -209,6 +215,7 @@ fn adjust_brightness_hsl(color: u32, x: i32) -> u32 {
     // Recombine with alpha
     (a << 24) | (r_new << 16) | (g_new << 8) | b_new
 }
+#[inline]
 fn hsl_to_rgb_f32(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
@@ -228,6 +235,7 @@ fn hsl_to_rgb_f32(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
 }
 /// Helper function to convert RGB to HSL color space
 /// Returns (hue, saturation, lightness) as (degrees, percentage, percentage)
+#[inline]
 fn rgb_to_hsl(r: u32, g: u32, b: u32) -> (f32, f32, f32) {
     let r_norm = r as f32 / 255.0;
     let g_norm = g as f32 / 255.0;
@@ -266,6 +274,7 @@ fn rgb_to_hsl(r: u32, g: u32, b: u32) -> (f32, f32, f32) {
     (hue, saturation * 100.0, lightness * 100.0)
 }
 
+#[inline]
 /// Helper function to convert HSL to RGB color space
 /// Takes (hue, saturation, lightness) as (degrees, percentage, percentage)
 /// Returns (r, g, b) as u32 values in range 0-255
@@ -328,6 +337,7 @@ enum BrightnessModel {
     LinearWeighted, // Uses RGB with perceptual weights
     HSL,            // Uses HSL color space
 }
+#[inline]
 
 fn adjust_brightness(color: u32, x: i32, model: BrightnessModel) -> u32 {
     match model {

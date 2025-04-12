@@ -40,6 +40,7 @@ impl NativeFramework {
 }
 
 impl Framework for NativeFramework {
+    #[inline]
     fn update(&mut self, buffer: &[u32]) {
         self.window
             .update_with_buffer(
@@ -50,28 +51,35 @@ impl Framework for NativeFramework {
             .unwrap();
     }
 
+    #[inline]
     fn is_open(&self) -> bool {
         self.window.is_open()
     }
 
+    #[inline]
     fn get_mouse_position(&self) -> Option<(f32, f32)> {
         self.window.get_mouse_pos(minifb::MouseMode::Pass)
     }
+    #[inline]
     fn get_size(&self) -> (usize, usize) {
         self.window.get_size()
     }
+    #[inline]
     fn is_key_down(&self, key: KeyCode) -> bool {
         self.window.is_key_down(map_key(key))
     }
+    #[inline]
     fn is_mouse_down(&self, button: MouseButton) -> bool {
         self.window.get_mouse_down(map_mouse(button))
     }
     fn get_mouse_scroll(&self) -> Option<(f32, f32)> {
         self.window.get_scroll_wheel()
     }
+    #[inline]
     fn set_title(&mut self, title: &str) {
         self.window.set_title(title);
     }
+    #[inline]
     fn get_time(&self) -> Box<(dyn Time + 'static)> {
         // Native environment: using SystemTime to get current time
         let now = std::time::Instant::now();
@@ -79,21 +87,27 @@ impl Framework for NativeFramework {
             time: now,
         });
     }
+    #[inline]
     fn wait(&self, time: u64) {
         std::thread::sleep(Duration::from_millis(time));
     }
+    #[inline]
     fn set_target_fps(&mut self, fps: usize) {
         self.window.set_target_fps(fps);
     }
+    #[inline]
     fn set_always_ontop(&mut self, always_ontop: bool) {
         self.window.topmost(always_ontop);
     }
+    #[inline]
     fn set_position(&mut self, x: isize, y: isize) {
         self.window.set_position(x, y);
     }
+    #[inline]
     fn get_position(&self) -> (isize, isize) {
         self.window.get_position()
     }
+    #[inline]
     fn set_icon(&mut self, buffer: &[u32], width: u32, height: u32) {
         // assert_eq!(
         //     buffer.len(),

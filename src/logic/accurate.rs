@@ -1,4 +1,7 @@
-use crate::logic::Logic;
+use crate::{
+    custom::{Block, Camera},
+    logic::Physics,
+};
 
 pub struct LogicAccurate {}
 
@@ -8,7 +11,7 @@ impl LogicAccurate {
     }
 }
 
-impl Logic for LogicAccurate {
+impl Physics for LogicAccurate {
     fn is_in_any_hole(
         &self,
         x: isize,
@@ -38,23 +41,31 @@ impl Logic for LogicAccurate {
         let cam_height = *buffer_height as f32;
         let x2 = x + width;
         let y2 = y + height;
-        if is_point_in_requctangle(x, y, cam_x, cam_y, cam_width, cam_height) {
-            return true;
-        }
-        if is_point_in_requctangle(x2, y, cam_x, cam_y, cam_width, cam_height) {
-            return true;
-        }
-        if is_point_in_requctangle(x, y2, cam_x, cam_y, cam_width, cam_height) {
-            return true;
-        }
-        if is_point_in_requctangle(x2, y2, cam_x, cam_y, cam_width, cam_height)
+        if self
+            .is_point_in_requctangle(x, y, cam_x, cam_y, cam_width, cam_height)
         {
+            return true;
+        }
+        if self
+            .is_point_in_requctangle(x2, y, cam_x, cam_y, cam_width, cam_height)
+        {
+            return true;
+        }
+        if self
+            .is_point_in_requctangle(x, y2, cam_x, cam_y, cam_width, cam_height)
+        {
+            return true;
+        }
+        if self.is_point_in_requctangle(
+            x2, y2, cam_x, cam_y, cam_width, cam_height,
+        ) {
             return true;
         }
         return false;
     }
-    fn get_closest_block_in_distance(
-        blocks: &[Block],
+    fn get_block_in_distance(
+        &self,
+        blocks: &Vec<Block>,
         pos_x: f32,
         pos_y: f32,
         max_distance: f32,
@@ -79,7 +90,7 @@ impl Logic for LogicAccurate {
                 check_x = block.x.get() as f32;
                 check_y = block.y.get() as f32 + block.height.get();
             }
-            let distance = get_distance_between_positions(
+            let distance = self.get_distance_between_positions(
                 pos_x,
                 pos_y,
                 check_x as f32,
@@ -95,6 +106,7 @@ impl Logic for LogicAccurate {
         return closest;
     }
     fn get_distance_between_positions(
+        &self,
         x1: f32,
         y1: f32,
         x2: f32,

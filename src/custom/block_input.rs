@@ -1,29 +1,37 @@
+// use crate::all::get_length_of_text_in_font;
+
+#[derive(Clone, Debug)]
 pub struct BlockInput {
     input_type: String,
-    name: String,
-    expected: Option<Vec<String>>,
-    expected_return: Option<Vec<String>>,
+    block_id: Option<usize>,
+    literal_allowed: Vec<String>,
+    literal_return: Vec<String>,
 }
 impl BlockInput {
-    fn new(
+    pub fn new(
         input_type: String,
-        name: String,
-        expected: Option<Vec<String>>,
-        expected_return: Option<Vec<String>>,
+        block_id: Option<usize>,
+        literal_allowed: Vec<String>,
+        literal_return: Vec<String>,
     ) -> Result<Self, &'static str> {
-        if let (Some(ref e), Some(ref er)) = (&expected, &expected_return) {
-            if e.len() != er.len() {
-                return Err(
-                    "expected and expected_return must have the same length",
-                );
-            }
+        if literal_allowed.len() != literal_return.len() {
+            return Err(
+                "expected and expected_return must have the same length",
+            );
         }
 
         Ok(Self {
+            block_id,
             input_type,
-            name,
-            expected,
-            expected_return,
+            literal_allowed,
+            literal_return,
         })
+    }
+    pub fn get_width(&self, _font: &fontdue::Font) -> f32 {
+        if self.block_id.is_none() {
+            return 20.0;
+        }
+        return 0.0;
+        //get_length_of_text_in_font(&self.name, font)
     }
 }
