@@ -31,7 +31,7 @@ impl BlockInput {
         if self.block_id.is_none() {
             return 20.0;
         }
-        return 0.0;
+        10.0
         //get_length_of_text_in_font(&self.name, font)
     }
 }

@@ -8,56 +8,36 @@
 use core::panic;
 use fontdue::Font;
 use mirl::graphics::rgb_to_u32;
+use mirl::lists::add_item_to_max_sized_list;
+use mirl::platform::framework_traits::ExtendedFramework;
+//use mirl::platform::framework_traits::Framework;
+use mirl::platform::Buffer;
+use mirl::platform::FileSystem;
+use mirl::render::draw_circle;
 use std::collections::HashMap;
 
 use crate::custom::BlockInput;
 use crate::custom::WorkSpace;
 use crate::logic::Physics;
-use crate::platform::shared::FileSystem;
-use crate::platform::KeyCode;
-use crate::render::RenderSettings;
 
 use crate::custom::Block;
 use crate::custom::Camera;
 use crate::custom::ID;
-
-// if false {
-//     let found = get_pixel(buffer, width, height, x, y);
-//     if found != 0 {
-//         return;
-//     }
-// }
-// #[inline]
-// fn get_pixel(
-//     buffer: &Vec<u32>,
-//     width: &isize,
-//     height: &isize,
-//     x: isize,
-//     y: isize,
-// ) -> u32 {
-//     if x < 0 || y < 0 {
-//         return 0;
-//     }
-//     if x >= *width || y >= *height {
-//         return 0;
-//     }
-//     let index = y * width + x;
-//     return buffer[index as usize];
-// }
+use crate::idk::draw_block;
+use mirl::extensions::*;
 
 #[inline]
-fn render_block<R: RenderSettings, L: Physics>(
+fn render_block<L: Physics>(
     block: &Block,
     camera: &Camera,
-    buffer: *mut u32,
-    block_colors: &Vec<u32>,
+    buffer: &Buffer,
+    block_colors: &[u32],
     width: usize,
     height: usize,
     font: &Font,
-    render_setting: &R,
     physics: &L,
 ) {
-    render_setting.draw_block(
+    draw_block(
         block,
         block.x.get() as isize,
         block.y.get() as isize,
@@ -71,103 +51,105 @@ fn render_block<R: RenderSettings, L: Physics>(
     );
 }
 #[inline]
-fn get_top_most_block_id_or_self(blocks: &Vec<Block>, index: usize) -> ID {
+fn get_top_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
     // Is this broken???????
-    // PROBABLY NOT BUT SOMEONE WHO CALLS THIS FUNCTION DEFENITELY IS
+    // PROBABLY NOT BUT SOMEONE WHO CALLS THIS FUNCTION definitely IS
     let block = &blocks[index];
     if block.connected_top.get().is_some() {
         return block.connected_top.get().unwrap();
     }
-    return block.id;
+    block.id
 }
 
-fn handle_connection_and_render_ghost_block<R: RenderSettings, L: Physics>(
-    buffer: *mut u32,
+fn handle_connection_and_render_ghost_block<L: Physics>(
+    buffer: &Buffer,
     width: &usize,
     height: &usize,
     camera: &Camera,
     blocks: &Vec<Block>,
+    _inline_blocks: &Vec<Block>,
     font: &Font,
     selected: &Option<usize>,
     snap_distance: f32,
-    render_settings: &R,
     logic: &L,
-    block_colors: &Vec<u32>,
+    block_colors: &[u32],
+    selected_type_is_action: bool,
 ) {
     if selected.is_some() {
-        // Connect to block above
-        let possible = logic.get_block_in_distance(
-            &blocks,
-            blocks[selected.unwrap()].x.get() as f32,
-            blocks[selected.unwrap()].y.get() as f32,
-            snap_distance,
-            *selected,
-            true,
-        );
-        let block = &blocks[selected.unwrap()];
-        block.possible_connection_above.set(None);
-
-        if possible.is_some() {
-            let above_block = &blocks[possible.unwrap()];
-            if is_there_a_loop_in_block_connections_for_block_internal(
-                &blocks,
-                get_top_most_block_id_or_self(
-                    blocks,
-                    index_by_block_id(above_block.id, blocks).unwrap(),
-                ),
-                &mut Vec::from([block.id]),
-            ) {
-                //println!("Loop avoided");
-                return;
-            } else {
-                // Save block, only if it is not in a loop
-                block.possible_connection_above.set(Some(above_block.id));
-            }
-
-            if !logic.is_block_visible_on_screen(
-                &above_block,
-                camera,
-                &(*width as isize),
-                &(*height as isize),
-            ) {
-                return;
-            }
-            render_settings.draw_block(
-                &block,
-                above_block.x.get() as isize,
-                above_block.y.get() as isize + block.height.get() as isize,
-                camera,
-                buffer,
-                render_settings.desaturate(
-                    render_settings.adjust_brightness(
-                        block_colors[block.block_color_id],
-                        -5,
-                    ),
-                    0.91,
-                ),
-                *width,
-                *height,
-                font,
-                logic,
+        if selected_type_is_action {
+            // Connect to block above
+            let possible = logic.get_block_in_distance(
+                blocks,
+                blocks[selected.unwrap()].x.get() as f32,
+                blocks[selected.unwrap()].y.get() as f32,
+                snap_distance,
+                *selected,
+                true,
             );
+            let block = &blocks[selected.unwrap()];
+            block.possible_connection_above.set(None);
+
+            if possible.is_some() {
+                let above_block = &blocks[possible.unwrap()];
+                if is_there_a_loop_in_block_connections_for_block_internal(
+                    blocks,
+                    get_top_most_block_id_or_self(
+                        blocks,
+                        index_by_block_id(above_block.id, blocks).unwrap(),
+                    ),
+                    &mut Vec::from([block.id]),
+                ) {
+                    //framework.log("Loop avoided");
+                    return;
+                } else {
+                    // Save block, only if it is not in a loop
+                    block.possible_connection_above.set(Some(above_block.id));
+                }
+
+                if !logic.is_block_visible_on_screen(
+                    above_block,
+                    camera,
+                    &(*width as isize),
+                    &(*height as isize),
+                ) {
+                    return;
+                }
+                draw_block(
+                    block,
+                    above_block.x.get() as isize,
+                    above_block.y.get() as isize + block.height.get() as isize,
+                    camera,
+                    buffer,
+                    mirl::graphics::desaturate_fast(
+                        mirl::graphics::adjust_brightness_fast(
+                            block_colors[block.block_color_id],
+                            -5,
+                        ),
+                        0.91,
+                    ),
+                    *width,
+                    *height,
+                    font,
+                    logic,
+                );
+            }
+        } else {
+            //framework.log("Not implemented")
         }
     }
 }
 
 // Misc
-fn handle_and_render_action_blocks_on_screen<R: RenderSettings, L: Physics>(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
+fn handle_and_render_action_blocks_on_screen<L: Physics>(
+    buffer: &Buffer,
     camera: &Camera,
     blocks: &mut Vec<Block>,
-    block_colors: &Vec<u32>,
+    block_colors: &[u32],
     font: &Font,
-    render_settings: &R,
     logic: &L,
 ) {
-    let now_width = *width as isize;
-    let now_height = *height as isize;
+    let now_width = buffer.width as isize;
+    let now_height = buffer.height as isize;
 
     let block_ids: Vec<usize> = (0..blocks.len()).collect();
 
@@ -191,27 +173,23 @@ fn handle_and_render_action_blocks_on_screen<R: RenderSettings, L: Physics>(
             camera,
             buffer,
             block_colors,
-            *width,
-            *height,
+            buffer.width,
+            buffer.height,
             font,
-            render_settings,
             logic,
         );
     }
 }
-fn handle_and_render_inline_blocks_on_screen<R: RenderSettings, L: Physics>(
-    buffer: *mut u32,
-    width: &usize,
-    height: &usize,
+fn handle_and_render_inline_blocks_on_screen<L: Physics>(
+    buffer: &Buffer,
     camera: &Camera,
     blocks: &mut Vec<Block>,
-    block_colors: &Vec<u32>,
+    block_colors: &[u32],
     font: &Font,
-    render_settings: &R,
     logic: &L,
 ) {
-    let now_width = *width as isize;
-    let now_height = *height as isize;
+    let now_width = buffer.width as isize;
+    let now_height = buffer.height as isize;
 
     let block_ids: Vec<usize> = (0..blocks.len()).collect();
 
@@ -235,19 +213,14 @@ fn handle_and_render_inline_blocks_on_screen<R: RenderSettings, L: Physics>(
             camera,
             buffer,
             block_colors,
-            *width,
-            *height,
+            buffer.width,
+            buffer.height,
             font,
-            render_settings,
             logic,
         );
     }
 }
 
-#[inline]
-fn subtract_tuple(one: (f32, f32), two: (f32, f32)) -> (f32, f32) {
-    (one.0 - two.0, one.1 - two.1)
-}
 #[inline]
 fn reorder_element<T>(vec: &mut Vec<T>, from: usize, to: usize) {
     if from != to && from < vec.len() && to < vec.len() {
@@ -263,64 +236,46 @@ fn get_block_id_above<L: Physics>(
     pos_y: f32,
     logic: &L,
 ) -> Option<usize> {
-    for block_id in 0..blocks.len() {
-        let block = &blocks[block_id];
-        if logic.is_point_in_requctangle(
+    for (block_id, block) in blocks.iter().enumerate() {
+        if logic.is_point_in_rectangle(
             pos_x,
             pos_y,
             block.x.get() as f32,
             block.y.get() as f32 + block.height.get(),
-            block.width.get() as f32,
-            block.height.get() as f32,
+            block.width.get(),
+            block.height.get(),
         ) {
             return Some(block_id);
         }
     }
-    return None;
+    None
 }
 
 #[inline]
 fn get_block_id_under_point<L: Physics>(
     blocks: &Vec<Block>,
-    pos_x: f32,
-    pos_y: f32,
+    pos_x: f64,
+    pos_y: f64,
     logic: &L,
 ) -> Option<usize> {
-    for block_id in 0..blocks.len() {
-        let block = &blocks[block_id];
-        if logic.is_point_in_requctangle(
+    for (block_id, block) in blocks.iter().enumerate() {
+        if logic.is_point_in_rectangle(
             pos_x,
             pos_y,
-            block.x.get() as f32,
-            block.y.get() as f32,
-            block.width.get() as f32,
-            block.height.get() as f32,
+            block.x.get() as f64,
+            block.y.get() as f64,
+            block.width.get() as f64,
+            block.height.get() as f64,
         ) {
             return Some(block_id);
         }
     }
-    return None;
-}
-
-fn add_item_to_max_sized_list(list: &mut Vec<u64>, max_size: usize, item: u64) {
-    list.push(item);
-    if list.len() < max_size {
-        return;
-    }
-    let to_remove = list.len() - max_size;
-    for _ in 0..to_remove {
-        list.remove(0);
-    }
+    None
 }
 
 #[inline]
-fn index_by_block_id(id: ID, blocks: &Vec<Block>) -> Option<usize> {
-    for block_id in 0..blocks.len() {
-        if blocks[block_id].id == id {
-            return Some(block_id);
-        }
-    }
-    return None;
+fn index_by_block_id(id: ID, blocks: &[Block]) -> Option<usize> {
+    (0..blocks.len()).find(|&block_id| blocks[block_id].id == id)
 }
 
 fn is_there_a_loop_in_block_connections_for_block(
@@ -328,11 +283,11 @@ fn is_there_a_loop_in_block_connections_for_block(
     block_index: ID,
 ) -> bool {
     let mut already_checked = Vec::new();
-    return is_there_a_loop_in_block_connections_for_block_internal(
+    is_there_a_loop_in_block_connections_for_block_internal(
         blocks,
         block_index,
         &mut already_checked,
-    );
+    )
 }
 fn is_there_a_loop_in_block_connections_for_block_internal(
     blocks: &Vec<Block>,
@@ -359,7 +314,7 @@ fn is_there_a_loop_in_block_connections_for_block_internal(
     //         already_checked,
     //     );
     // }
-    return false;
+    false
 }
 #[inline]
 fn custom_join(vector: Vec<ID>, separator: &str) -> String {
@@ -372,7 +327,7 @@ fn custom_join(vector: Vec<ID>, separator: &str) -> String {
             out = out + separator;
         }
     }
-    return out;
+    out
 }
 
 #[inline]
@@ -381,11 +336,11 @@ fn get_ids_connected_to_block(
     blocks: &Vec<Block>,
     found: &mut Vec<ID>,
 ) -> Vec<ID> {
-    // FIX THIS FUNCTION FOR GOD SAKE WHY ARE THERE MUTLIPLE IDS??????????????????
+    // FIX THIS FUNCTION FOR GOD SAKE WHY ARE THERE MULTIPLE IDS??????????????????
     let block = &blocks[index_by_block_id(top_most_block_id, &blocks).unwrap()];
 
     if found.contains(&block.id) {
-        println!("{} -> {}", block.id, block.connected_below.get().unwrap());
+        //framework.log("{} -> {}", block.id, block.connected_below.get().unwrap());
         panic!(
             "Infinite loop found with these ids {} with current {} (len({}))",
             custom_join(found.to_vec(), ", "),
@@ -409,7 +364,7 @@ fn get_ids_connected_to_block(
 
     found.retain(|x| seen.insert(*x));
 
-    return found.to_vec();
+    found.to_vec()
 }
 #[inline]
 fn index_by_block_ids(
@@ -420,7 +375,7 @@ fn index_by_block_ids(
     for id in ids {
         return_list.push(index_by_block_id(*id, blocks))
     }
-    return return_list;
+    return_list
 }
 fn get_total_height_of_blocks(
     blocks: &Vec<Block>,
@@ -435,7 +390,7 @@ fn get_total_height_of_blocks(
         let block = &blocks[idx.unwrap()];
         height += block.height.get();
     }
-    return height;
+    height
 }
 
 fn get_usize_out_of_option_list(list: Vec<Option<usize>>) -> Vec<usize> {
@@ -443,7 +398,7 @@ fn get_usize_out_of_option_list(list: Vec<Option<usize>>) -> Vec<usize> {
     for l in list {
         new.push(l.unwrap())
     }
-    return new;
+    new
 }
 
 fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
@@ -471,7 +426,7 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
     let blocks_to_offset_with =
         &block_query[0..own_block_id_index + 1].to_vec();
 
-    //println!(">{:?}", block_query);
+    //framework.log(">{:?}", block_query);
 
     let total_offset = get_total_height_of_blocks(
         blocks,
@@ -496,24 +451,24 @@ fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
     }
     ((value2 - value1) / value1).abs() * 100.0
 }
-fn handle_mouse<F: platform::shared::Framework>(
+fn handle_mouse<F: ExtendedFramework<f64>>(
     camera: &mut Camera,
     framework: &F,
-    scroll_multiplier: f32,
+    scroll_multiplier: f64,
 ) {
     // Mouse wheel movement
     let mouse_wheel_temp = framework.get_mouse_scroll();
     if mouse_wheel_temp.is_some() {
         let extra_mul;
-        if framework.is_key_down(platform::KeyCode::RightShift) {
+        if framework.is_key_down(mirl::platform::KeyCode::RightShift) {
             extra_mul = 10.0;
         } else {
             extra_mul = 1.0;
         }
-        if framework.is_key_down(platform::KeyCode::LeftControl) {
+        if framework.is_key_down(mirl::platform::KeyCode::LeftControl) {
             camera.z -= mouse_wheel_temp.unwrap().1 * extra_mul;
         } else {
-            if framework.is_key_down(platform::KeyCode::LeftShift) {
+            if framework.is_key_down(mirl::platform::KeyCode::LeftShift) {
                 camera.y -= (mouse_wheel_temp.unwrap().0
                     * scroll_multiplier
                     * extra_mul) as isize;
@@ -535,7 +490,7 @@ fn reorder_blocks(
     mouse_down: bool,
     blocks: &mut Vec<Block>,
     camera: &mut Camera,
-    mouse_delta: (f32, f32),
+    mouse_delta: (f64, f64),
     selected: &mut Option<usize>,
 ) {
     if mouse_down {
@@ -545,10 +500,10 @@ fn reorder_blocks(
             *selected = Some(0);
             blocks[idx]
                 .x
-                .set((blocks[idx].x.get() as f32 + mouse_delta.0) as u16);
+                .set((blocks[idx].x.get() as f64 + mouse_delta.0) as u16);
             blocks[idx]
                 .y
-                .set((blocks[idx].y.get() as f32 + mouse_delta.1) as u16);
+                .set((blocks[idx].y.get() as f64 + mouse_delta.1) as u16);
         } else {
             camera.x -= mouse_delta.0 as isize;
             camera.y -= mouse_delta.1 as isize;
@@ -563,7 +518,7 @@ fn handle_or_get_selected<
     last_mouse_down: bool,
     blocks: &mut Vec<Block>,
     camera: &mut Camera,
-    mouse_pos: (f32, f32),
+    mouse_pos: (f64, f64),
     // mouse_delta: (f32, f32),
     // framework: &F,
     // scroll_multiplier: f32,
@@ -578,8 +533,8 @@ fn handle_or_get_selected<
         if !last_mouse_down {
             selected = get_block_id_under_point(
                 &blocks,
-                mouse_pos.0 + camera.x as f32,
-                mouse_pos.1 + camera.y as f32,
+                mouse_pos.0 + camera.x as f64,
+                mouse_pos.1 + camera.y as f64,
                 logic,
             );
         }
@@ -662,7 +617,7 @@ fn handle_or_get_selected<
         selected = None;
     }
 
-    return selected;
+    selected
 }
 use serde_json;
 pub fn parse_translations(
@@ -696,36 +651,36 @@ pub fn parse_translations(
 }
 use csv::ReaderBuilder;
 use std::error::Error;
-pub fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
-    let mut length = 0.0;
-    for ch in text.chars() {
-        let (metrics, _) = font.rasterize(ch, 20.0);
-        length += metrics.advance_width;
-    }
-    return length;
-}
+// pub fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
+//     let mut length = 0.0;
+//     for ch in text.chars() {
+//         let (metrics, _) = font.rasterize(ch, 20.0);
+//         length += metrics.advance_width;
+//     }
+//     return length;
+// }
 
-fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
+fn load_blocks<F: FileSystem, L: Physics>(
     file_system: &F,
     block_output_types: &mut Vec<String>,
     block_output_colors: &mut Vec<u32>,
     translation: &mut HashMap<String, String>,
     font: &Font,
-    workspace: &mut WorkSpace<S, L>,
+    workspace: &mut WorkSpace<L>,
 ) -> (Vec<Block>, Vec<Block>) {
-    let path =
-        r"C:\personal\games\minecraft\Automated\generation_lib\procedures";
+    let path = r"C:\personal\games\minecraft\Automated\ender_py\procedures";
     let mut action_blocks = Vec::new();
     let mut inline_blocks = Vec::new();
 
     let all_plugin_folders = file_system.get_folders_in_folder(path);
-    println!("{:?}", all_plugin_folders);
+    //framework.log("{:?}", all_plugin_folders);
+    let mut errors: Vec<String> = Vec::new();
     for plugin_folder in all_plugin_folders {
         let plugin_path = file_system.join(path, &plugin_folder);
         let setting_file = file_system.join(&plugin_path, "settings.json");
         let translation_file =
             file_system.join(&plugin_path, "translation.csv");
-
+        //framework.log("{translation_file}");
         let translation_data =
             file_system.get_file_contents(&translation_file).unwrap();
         let extracted =
@@ -754,10 +709,10 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
         for block in
             pre_blocks.as_array().ok_or("Error").expect("Error unwrapping")
         {
-            println!(
-                "{}",
-                block.get("name").ok_or("Error").expect("Error unwrapping")
-            );
+            // framework.log(
+            //     "{}",
+            //     block.get("name").ok_or("Error").expect("Error unwrapping")
+            // );
             let block_type =
                 block.get("type").ok_or("Error").expect("Error unwrapping");
             if block_type == "action" || block_type == "inline" {
@@ -768,22 +723,37 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
                     .expect("Error unwrapping")
                     .to_string();
 
-                let output = block
-                    .get("output")
-                    .expect(&format!("Missing output for {}", internal_name))
-                    .as_str()
-                    .expect("Error unwrapping")
-                    .to_string();
+                let output;
+                if let Some(_output) = block.get("output") {
+                    if let Some(__output) = _output.as_str() {
+                        output = __output.to_string()
+                    } else {
+                        errors.push(format!(
+                            "Output of {} isn't a string",
+                            internal_name
+                        ));
+                        output = "You aren't supposed to read me".into();
+                    }
+                } else {
+                    errors
+                        .push(format!("Missing output for {}", internal_name));
+                    output = "You aren't supposed to read me".into();
+                }
 
                 if !block_output_types.contains(&output) {
                     block_output_types.push(output.clone());
                     block_output_colors.push(generate_random_color());
                 }
-
-                let name = translation.get(&internal_name).expect(&format!(
-                    "Translation key '{}' not found",
-                    internal_name
-                ));
+                let name: String;
+                if let Some(_name) = translation.get(&internal_name) {
+                    name = (*_name).clone()
+                } else {
+                    errors.push(format!(
+                        "Translation key '{}' not found",
+                        internal_name
+                    ));
+                    name = internal_name.clone()
+                }
 
                 let _empty = serde_json::Value::Array(Vec::new());
                 let pre_inputs = block
@@ -807,7 +777,7 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
                             in_case_of_literal_keys_and_return_values
                                 .expect("THIS SHOULD LITERALLY BE IMPOSSIBLE")
                                 .as_object();
-                        //println!("{:?}", key_and_return_temp);
+                        //framework.log("{:?}", key_and_return_temp);
 
                         let keys = key_and_return_temp.expect("Expected key 'expected' to be a dict, are you sure you didn't accidentally make it a list?").keys();
                         for key in keys {
@@ -828,7 +798,7 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
                     .unwrap();
                     inputs.push(input);
                 }
-                println!(">{:?}", pre_inputs);
+                //framework.log(">{:?}", pre_inputs);
 
                 let inline = block_type == "inline";
                 let block_type_id;
@@ -836,6 +806,9 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
                     block_type_id = 1
                 } else {
                     block_type_id = 0
+                }
+                if errors.len() > 0 {
+                    continue;
                 }
 
                 let block = Block::new(
@@ -859,16 +832,24 @@ fn load_blocks<F: FileSystem, S: RenderSettings, L: Physics>(
                     action_blocks.push(block);
                 }
             } else {
-                println!("Skipping Block as {} is not supported", block_type);
+                //framework.log("Skipping Block as {} is not supported", block_type);
                 continue;
             }
         }
     }
-    return (action_blocks, inline_blocks);
+
+    if errors.len() > 0 {
+        panic!(
+            "Unable to load plugins due to the following error(s):\n{:#?}",
+            errors
+        );
+    }
+
+    (action_blocks, inline_blocks)
 }
 #[inline]
-fn generate_random_color() -> u32 {
-    return getrandom::u32().expect("Unable to generate random color");
+pub fn generate_random_color() -> u32 {
+    getrandom::u32().expect("Unable to generate random color")
 }
 
 // #[inline]
@@ -900,11 +881,9 @@ fn generate_random_color() -> u32 {
 // FAST_RENDER OFF: 18 fps
 // FAST_RENDER ON: 25 fps
 
-use crate::platform;
-
 pub fn main_loop<
-    F: platform::shared::Framework,
-    D: platform::shared::FileSystem,
+    F: ExtendedFramework<f64>,
+    D: mirl::platform::FileSystem,
     // S: RenderSettings,
     // L: Physics,
 >(
@@ -912,35 +891,42 @@ pub fn main_loop<
     file_system: &D,
     // render_settings: &S,
     // logic: &L,
+    buffer: &Buffer,
 ) {
-    let _render = crate::render::RenderSettingsPretty::new();
     let _physics = crate::logic::LogicAccurate::new();
-    let mut workspaces = Vec::from([
-        WorkSpace::new(&_render, &_physics),
-        WorkSpace::new(&_render, &_physics),
-    ]);
+    let mut workspaces =
+        Vec::from([WorkSpace::new(&_physics), WorkSpace::new(&_physics)]);
     let mut current_workspace_id = 0;
     let workspace_length = workspaces.len();
 
     let mut current_workspace = &mut workspaces[current_workspace_id];
 
-    let icon = file_system
-        .get_file_contents("src/idk.ico")
+    let icon: Buffer = file_system
+        .get_file_contents("idk.ico")
         .unwrap()
         .as_image()
-        .unwrap();
-    framework.set_icon(&icon.0, icon.1, icon.2);
-    //println!("{:?}", icon.1);
+        .unwrap()
+        .into();
+    framework.set_icon(&icon.data, icon.width as u32, icon.height as u32);
+
+    let cursors = framework.load_custom_cursor(
+        U2::new(0),
+        rgb_to_u32(100, 20, 250),
+        rgb_to_u32(80, 30, 240),
+    );
+
+    framework.set_cursor_style(&cursors.default);
+
+    //framework.log("{:?}", icon.1);
     //platform::log("Entered main loop");
     let snap_distance = 70.0;
     let scroll_multiplier = 5.0;
-    let max_fps = 1000;
+    let max_fps = 60;
     framework.set_target_fps(max_fps);
     //let target_frame_delta = mirl::time::MILLIS_PER_SEC / max_fps; // Time for one frame at the target FPS
     let mut frame_start;
 
     let mut delta_time;
-    let mut buffer: Vec<u32>;
     let mut fps;
 
     let mut mouse_pos = framework.get_mouse_position().unwrap_or((0.0, 0.0));
@@ -953,12 +939,15 @@ pub fn main_loop<
     //color_names.push("bool".to_string());
     // block_output_color_rgb.push(mirl::graphics::rgb_to_u32(50, 80, 255));
     // block_output_color_names.push("bool".to_string());
-    let font = platform::load_font("src/inter.ttf");
+    let file_system =
+        mirl::platform::file_system::NativeFileSystem::new(vec!["inter.ttf"]);
+    let font =
+        file_system.get_file_contents("inter.ttf").unwrap().as_font().unwrap();
 
     let mut translation = HashMap::new();
 
     let (action_blocks, inline_blocks) = load_blocks(
-        file_system,
+        &file_system,
         &mut block_output_color_names,
         &mut block_output_color_rgb,
         &mut translation,
@@ -967,6 +956,7 @@ pub fn main_loop<
     );
     current_workspace.action_blocks.extend(action_blocks.iter().cloned());
     current_workspace.inline_blocks.extend(inline_blocks.iter().cloned());
+
     // for id in 0..1000 {
     //     blocks.push(Block::new(
     //         format!("new block {}", id + 1),
@@ -986,7 +976,7 @@ pub fn main_loop<
     //     ))
     // }
 
-    let mut last_mouse_down;
+    let mut mouse_held;
     let mut mouse_down_temp;
     let mut mouse_down = false;
 
@@ -998,22 +988,17 @@ pub fn main_loop<
     let mut mouse_outside;
     let mut stable_fps: u64;
 
-    let (width, height) = framework.get_size();
-
-    buffer = mirl::render::get_empty_buffer(width, height);
-    let buffer_pointer: *mut u32 = buffer.as_mut_ptr();
-    let total_window_size = width * height;
-
     let mut last_right_down = false;
     let mut last_left_down = false;
 
     //platform::log("Starting main loop");
     frame_start = framework.get_time();
+
     while framework.is_open() {
-        mirl::render::clear_screen(buffer_pointer, total_window_size);
+        buffer.clear();
 
         let mut reload_workspace = false;
-        if framework.is_key_down(KeyCode::Right)
+        if framework.is_key_down(mirl::platform::KeyCode::Right)
             && !last_right_down
             && workspace_length > current_workspace_id + 1
         {
@@ -1023,7 +1008,7 @@ pub fn main_loop<
         } else {
             last_right_down = false
         }
-        if framework.is_key_down(KeyCode::Left)
+        if framework.is_key_down(mirl::platform::KeyCode::Left)
             && !last_left_down
             && current_workspace_id > 0
         {
@@ -1046,27 +1031,27 @@ pub fn main_loop<
         }
 
         // if (buffer_pointer as usize) % 16 == 0 {
-        //     println!("Buffer is 16-byte aligned");
+        //     framework.log("Buffer is 16-byte aligned");
         // } else {
-        //     println!("Buffer is NOT 16-byte aligned");
+        //     framework.log("Buffer is NOT 16-byte aligned");
         // }
         // Mouse stuff and block(/camera) selection/movement
         mouse_delta = mouse_pos;
         mouse_pos = framework.get_mouse_position().unwrap_or(mouse_pos);
 
-        mouse_delta = subtract_tuple(mouse_pos, mouse_delta);
-        mouse_outside = !current_workspace.logic.is_point_in_requctangle(
+        mouse_delta = mouse_pos.sub(mouse_delta);
+        mouse_outside = !current_workspace.logic.is_point_in_rectangle(
             mouse_pos.0,
             mouse_pos.1,
             0.0,
             0.0,
-            width as f32,
-            height as f32,
+            buffer.width as f64,
+            buffer.height as f64,
         );
 
         mouse_down_temp = mouse_down;
-        mouse_down = framework.is_mouse_down(platform::MouseButton::Left);
-        last_mouse_down = mouse_down_temp && mouse_down;
+        mouse_down = framework.is_mouse_down(mirl::platform::MouseButton::Left);
+        mouse_held = mouse_down_temp && mouse_down;
 
         handle_mouse(
             &mut current_workspace.camera,
@@ -1077,7 +1062,7 @@ pub fn main_loop<
         if !mouse_outside {
             selected = handle_or_get_selected(
                 mouse_down,
-                last_mouse_down,
+                mouse_held,
                 &mut current_workspace.action_blocks,
                 &mut current_workspace.camera,
                 mouse_pos,
@@ -1088,12 +1073,12 @@ pub fn main_loop<
                 current_workspace.logic,
                 selected_type_is_action,
             );
-            if selected.is_some() && !last_mouse_down {
+            if selected.is_some() && !mouse_held {
                 selected_type_is_action = true;
             } else {
                 selected = handle_or_get_selected(
                     mouse_down,
-                    last_mouse_down,
+                    mouse_held,
                     &mut current_workspace.inline_blocks,
                     &mut current_workspace.camera,
                     mouse_pos,
@@ -1104,12 +1089,34 @@ pub fn main_loop<
                     current_workspace.logic,
                     selected_type_is_action,
                 );
-                if selected.is_some() && !last_mouse_down {
+                if selected.is_some() && !mouse_held {
                     selected_type_is_action = false;
                 }
             }
         }
-        //println!("Selected: {:?}, {}", selected, selected_type_is_action);
+
+        if mouse_down {
+            if selected.is_some() {
+                //framework.log("SELECTED");
+                framework.set_cursor_style(&cursors.closed_hand);
+            } else {
+                framework.set_cursor_style(&cursors.open_hand);
+                //framework.log("UNSELECTED");
+            }
+        } else {
+            framework.set_cursor_style(&cursors.default);
+        }
+        if framework.is_key_down(mirl::platform::KeyCode::B) {
+            framework.set_cursor_style(&cursors.default);
+        }
+        // if framework.is_key_down(KeyCode::B) {
+        //     platform::cursor::set_cursor_style_windows(
+        //         handle,
+        //         &platform::shared::CursorStyle::OpenHand,
+        //     );
+        // }
+
+        //framework.log("Selected: {:?}, {}", selected, selected_type_is_action);
         if selected_type_is_action {
             reorder_blocks(
                 mouse_down,
@@ -1134,99 +1141,79 @@ pub fn main_loop<
         }
         //############################################
         handle_and_render_action_blocks_on_screen(
-            buffer_pointer,
-            &width,
-            &height,
+            &buffer,
             &current_workspace.camera,
             &mut current_workspace.action_blocks,
             &block_output_color_rgb,
             &font,
-            current_workspace.render,
             current_workspace.logic,
         );
         handle_and_render_inline_blocks_on_screen(
-            buffer_pointer,
-            &width,
-            &height,
+            &buffer,
             &current_workspace.camera,
             &mut current_workspace.inline_blocks,
             &block_output_color_rgb,
             &font,
-            current_workspace.render,
             current_workspace.logic,
         );
-        if selected_type_is_action {
-            handle_connection_and_render_ghost_block(
-                buffer_pointer,
-                &width,
-                &height,
-                &current_workspace.camera,
-                &current_workspace.action_blocks,
-                &font,
-                &selected,
-                snap_distance,
-                current_workspace.render,
-                current_workspace.logic,
-                &block_output_color_rgb,
-            );
-        } else {
-            handle_connection_and_render_ghost_block(
-                buffer_pointer,
-                &width,
-                &height,
-                &current_workspace.camera,
-                &current_workspace.inline_blocks,
-                &font,
-                &selected,
-                snap_distance,
-                current_workspace.render,
-                current_workspace.logic,
-                &block_output_color_rgb,
-            );
-        }
-        let mouse_size = 4;
-        let mouse_size_half = mouse_size as f32 / 2.0;
 
-        if current_workspace.logic.is_reqtuctangle_visible_on_screen(
+        handle_connection_and_render_ghost_block(
+            &buffer,
+            &buffer.width,
+            &buffer.height,
+            &current_workspace.camera,
+            &current_workspace.action_blocks,
+            &current_workspace.inline_blocks,
+            &font,
+            &selected,
+            snap_distance,
+            current_workspace.logic,
+            &block_output_color_rgb,
+            selected_type_is_action,
+        );
+        let mouse_size = 4;
+        let mouse_size_half = mouse_size as f64 / 2.0;
+
+        if current_workspace.logic.is_rectangle_visible_on_screen(
             mouse_pos.0 - mouse_size_half,
             mouse_pos.1 - mouse_size_half,
-            mouse_size as f32,
-            mouse_size as f32,
+            mouse_size as f64,
+            mouse_size as f64,
             &current_workspace.camera,
-            &(width as isize),
-            &(width as isize),
+            &(buffer.width as isize),
+            &(buffer.width as isize),
         ) {
-            current_workspace.render.draw_circle(
-                buffer_pointer,
-                width,
-                height,
+            draw_circle(
+                buffer,
                 mouse_pos.0 as usize,
                 mouse_pos.1 as usize,
                 mouse_size,
                 rgb_to_u32(100, 20, 200),
+                true,
             );
         }
         //############################################
-        framework.update(&buffer); // "Unable to update window :("
+        framework.update(&buffer);
         delta_time = frame_start.get_elapsed_time();
         frame_start = framework.get_time();
 
-        if delta_time != 0 {
-            fps = mirl::time::MILLIS_PER_SEC / delta_time;
+        if delta_time != 0.0 {
+            fps = mirl::time::MILLIS_PER_SEC as f64 / delta_time;
         } else {
-            fps = u64::MAX;
+            fps = f64::MAX;
         }
 
-        add_item_to_max_sized_list(&mut fps_list, fps as usize / 4, fps as u64);
+        add_item_to_max_sized_list(&mut fps_list, fps as usize, fps as u64);
+
         if fps_list.len() == 0 {
             stable_fps = 0;
         } else {
-            stable_fps = fps_list.iter().sum::<u64>() / fps_list.len() as u64;
+            stable_fps = fps_list.average();
         }
 
         framework.set_title(
             to_monospace_unicode(&format!(
-                "Rust Window {:>4}/{:>4} FPS (Sampling {:>3}) | {:>8}x {:>8}y {:>4}z | {:>8}x {:>8}y -> {:>4} {:>4} -> {:>3} {:>3} | {} + {} = {}",
+                "Rust Window {:>4}/{:>5.0} FPS (Sampling {:>3}) | {:>8}x {:>8}y {:>4}z | {:>8}x {:>8}y -> {:>4} {:>4} -> {:>3} {:>3} | {}A + {}I = {}T",
                 stable_fps,
                 fps,
                 fps_list.len(),
@@ -1248,7 +1235,7 @@ pub fn main_loop<
         );
         // if selected.is_some() {
         //     let block = &blocks[selected.unwrap()];
-        //     println!("Block Index: {}, ID: {}, Connected bottom: {}, Connected top: {}, Possible connection below: {}, Possible Connection Above: {}",
+        //     framework.log("Block Index: {}, ID: {}, Connected bottom: {}, Connected top: {}, Possible connection below: {}, Possible Connection Above: {}",
         //     selected.unwrap(), block.id,
         //     block.connected_below.get().map_or("None".to_string(), |id| id.to_string()),
         //     block.connected_top.get().map_or("None".to_string(), |id| id.to_string()),

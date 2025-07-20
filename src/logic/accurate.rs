@@ -25,43 +25,45 @@ impl Physics for LogicAccurate {
         }
         false
     }
-    fn is_reqtuctangle_visible_on_screen(
+    fn is_rectangle_visible_on_screen<F: mirl::math::Number>(
         &self,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
+        x: F,
+        y: F,
+        width: F,
+        height: F,
         camera: &Camera,
         buffer_width: &isize,
         buffer_height: &isize,
     ) -> bool {
-        let cam_x = camera.x as f32;
-        let cam_y = camera.y as f32;
-        let cam_width = *buffer_width as f32;
-        let cam_height = *buffer_height as f32;
-        let x2 = x + width;
-        let y2 = y + height;
+        let x = x.to_f64().unwrap();
+        let y = y.to_f64().unwrap();
+        let cam_x = camera.x as f64;
+        let cam_y = camera.y as f64;
+        let cam_width = *buffer_width as f64;
+        let cam_height = *buffer_height as f64;
+        let x2 = x + (width).to_f64().unwrap();
+        let y2 = y + (height).to_f64().unwrap();
         if self
-            .is_point_in_requctangle(x, y, cam_x, cam_y, cam_width, cam_height)
+            .is_point_in_rectangle(x, y, cam_x, cam_y, cam_width, cam_height)
         {
             return true;
         }
         if self
-            .is_point_in_requctangle(x2, y, cam_x, cam_y, cam_width, cam_height)
+            .is_point_in_rectangle(x2, y, cam_x, cam_y, cam_width, cam_height)
         {
             return true;
         }
         if self
-            .is_point_in_requctangle(x, y2, cam_x, cam_y, cam_width, cam_height)
+            .is_point_in_rectangle(x, y2, cam_x, cam_y, cam_width, cam_height)
         {
             return true;
         }
-        if self.is_point_in_requctangle(
+        if self.is_point_in_rectangle(
             x2, y2, cam_x, cam_y, cam_width, cam_height,
         ) {
             return true;
         }
-        return false;
+        false
     }
     fn get_block_in_distance(
         &self,
@@ -103,7 +105,7 @@ impl Physics for LogicAccurate {
             }
         }
 
-        return closest;
+        closest
     }
     fn get_distance_between_positions(
         &self,
@@ -112,6 +114,17 @@ impl Physics for LogicAccurate {
         x2: f32,
         y2: f32,
     ) -> f32 {
-        return ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt();
+        ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt()
+    }
+    fn get_block_input_in_distance(
+        &self,
+        blocks: &Vec<Block>,
+        pos_x: f32,
+        pos_y: f32,
+        max_distance: f32,
+        blacklisted: Option<usize>,
+        top: bool,
+    ) -> Option<usize> {
+        None
     }
 }

@@ -1,9 +1,8 @@
-use crate::{logic::Physics, render::RenderSettings};
+use crate::logic::Physics;
 
 use super::{Block, Camera};
 
-pub struct WorkSpace<'a, S: RenderSettings, L: Physics> {
-    pub render: &'a S,
+pub struct WorkSpace<'a, L: Physics> {
     pub logic: &'a L,
     block_counter: usize,
     pub action_blocks: Vec<Block>,
@@ -11,10 +10,9 @@ pub struct WorkSpace<'a, S: RenderSettings, L: Physics> {
     pub camera: Camera,
 }
 
-impl<'a, S: RenderSettings, L: Physics> WorkSpace<'a, S, L> {
-    pub fn new(render: &'a S, logic: &'a L) -> Self {
+impl<'a, L: Physics> WorkSpace<'a, L> {
+    pub fn new(logic: &'a L) -> Self {
         Self {
-            render: render,
             logic: logic,
             block_counter: 0,
             action_blocks: Vec::new(),
@@ -24,6 +22,6 @@ impl<'a, S: RenderSettings, L: Physics> WorkSpace<'a, S, L> {
     }
     pub fn increment_block_id(&mut self) -> usize {
         self.block_counter += 1;
-        return self.block_counter;
+        self.block_counter
     }
 }

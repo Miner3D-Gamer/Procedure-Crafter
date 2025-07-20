@@ -112,5 +112,5 @@ fn install_linux_associations() {
 fn install_macos_associations() {
     // macOS file associations are typically set in the Info.plist
     // of the application bundle, not usually set programmatically
-    println!("On macOS, file associations should be set in Info.plist");
+    framework.log("On macOS, file associations should be set in Info.plist");
 }
