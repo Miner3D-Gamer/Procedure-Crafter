@@ -65,7 +65,7 @@ pub trait Physics {
             block.x.get() as f32,
             block.y.get() as f32,
             block.width.get(),
-            block.height.get() ,
+            block.height.get(),
             camera,
             width,
             height,
@@ -77,9 +77,9 @@ pub trait Physics {
         pos_x: f32,
         pos_y: f32,
         max_distance: f32,
-        blacklisted: Option<usize>,
+        blacklisted: &[ID],
         top: bool,
-    ) -> Option<usize>;
+    ) -> Option<Vec<(ID, usize)>>;
 }
 
 mod fast;
@@ -88,7 +88,7 @@ pub use fast::LogicFast;
 mod accurate;
 pub use accurate::LogicAccurate;
 
-use crate::custom::{Block, Camera};
+use crate::custom::{Block, Camera, ID};
 
 const _: fn() = || {
     fn assert_impl<T: Physics>() {}

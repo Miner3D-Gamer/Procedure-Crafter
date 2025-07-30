@@ -63,8 +63,7 @@ pub fn draw_block<L: Physics>(
 
             draw_rectangle(
                 buffer,
-                origin_x as isize
-                    + block.input_offsets.borrow()[i * 2 + 1] as isize,
+                origin_x + block.input_offsets.borrow()[i * 2 + 1] as isize,
                 origin_y + block.height.get() as isize / 10,
                 block.input_offsets.borrow()[i * 2 + 2] as isize
                     - block.input_offsets.borrow()[i * 2 + 1] as isize,

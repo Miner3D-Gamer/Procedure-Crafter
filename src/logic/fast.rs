@@ -1,5 +1,5 @@
 use crate::{
-    custom::{Block, Camera},
+    custom::{block::InputRememberer, Block, Camera, ID},
     logic::Physics,
 };
 
@@ -58,9 +58,9 @@ impl Physics for LogicFast {
         {
             return false;
         }
-        if !self.is_point_in_rectangle(
-            x2, y2, cam_x, cam_y, cam_width, cam_height,
-        ) {
+        if !self
+            .is_point_in_rectangle(x2, y2, cam_x, cam_y, cam_width, cam_height)
+        {
             return false;
         }
         true
@@ -75,13 +75,10 @@ impl Physics for LogicFast {
         top: bool,
     ) -> Option<usize> {
         // Any
-        for block_id in 0..blocks.len() {
-            if blacklisted.is_some() {
-                if block_id == blacklisted.unwrap() {
-                    continue;
-                }
+        for (block_id, block) in blocks.iter().enumerate() {
+            if blacklisted.is_some() && block_id == blacklisted.unwrap() {
+                continue;
             }
-            let block = &blocks[block_id];
             let check_x;
             let check_y;
             if top {
@@ -91,16 +88,12 @@ impl Physics for LogicFast {
                 check_x = block.x.get() as f32;
                 check_y = block.y.get() as f32 + block.height.get();
             }
-            if block.block_type == 0 {
-                if self.get_distance_between_positions(
-                    pos_x,
-                    pos_y,
-                    check_x as f32,
-                    check_y as f32,
+            if block.block_type == 0
+                && self.get_distance_between_positions(
+                    pos_x, pos_y, check_x, check_y,
                 ) < max_distance
-                {
-                    return Some(block_id);
-                }
+            {
+                return Some(block_id);
             }
         }
         None
@@ -122,13 +115,57 @@ impl Physics for LogicFast {
         pos_x: f32,
         pos_y: f32,
         max_distance: f32,
-        blacklisted: Option<usize>,
-        top: bool,
-    ) -> Option<usize> {
+        blacklisted: &[ID],
+        _top: bool,
+    ) -> Option<Vec<(ID, usize)>> {
+        let mut smallest = f32::MAX;
+        let mut smallest_path = Vec::new();
         for block in blocks {
-            let check_pos_origin_x = block.x.get();
+            if blacklisted.contains(&block.id) {
+                continue;
+            }
+            let distances = block.get_inputs_in_range(
+                (pos_x, pos_y),
+                (0.0, 0.0),
+                max_distance,
+                self,
+                blacklisted,
+                blocks,
+            );
+            if let Some(distance) = distances {
+                let (path, dis) = get_closest(distance);
+                if dis < smallest {
+                    smallest_path = path;
+                    smallest = dis;
+                }
+            }
         }
-
-        None
+        if smallest_path.is_empty() {
+            return None;
+        }
+        Some(smallest_path)
     }
+}
+fn get_closest(inputs: InputRememberer) -> (Vec<(ID, usize)>, f32) {
+    let mut smallest_path = Vec::new();
+    let mut smallest = f32::MAX;
+
+    for (spot, more, distance) in inputs.internal_inputs {
+        let mut current_path = vec![(inputs.own_id, spot)];
+        let distance = distance.unwrap();
+
+        if let Some(deeper) = more {
+            let (deeper_path, deeper_distance) = get_closest(deeper);
+            if deeper_distance < smallest {
+                current_path.extend(deeper_path);
+                smallest_path = current_path;
+                smallest = deeper_distance;
+            }
+        } else if distance < smallest {
+            smallest = distance;
+            smallest_path = current_path;
+        }
+    }
+
+    (smallest_path, smallest)
 }

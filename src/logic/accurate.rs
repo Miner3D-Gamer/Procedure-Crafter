@@ -1,5 +1,5 @@
 use crate::{
-    custom::{Block, Camera},
+    custom::{Block, Camera, ID},
     logic::Physics,
 };
 
@@ -43,8 +43,7 @@ impl Physics for LogicAccurate {
         let cam_height = *buffer_height as f64;
         let x2 = x + (width).to_f64().unwrap();
         let y2 = y + (height).to_f64().unwrap();
-        if self
-            .is_point_in_rectangle(x, y, cam_x, cam_y, cam_width, cam_height)
+        if self.is_point_in_rectangle(x, y, cam_x, cam_y, cam_width, cam_height)
         {
             return true;
         }
@@ -58,9 +57,9 @@ impl Physics for LogicAccurate {
         {
             return true;
         }
-        if self.is_point_in_rectangle(
-            x2, y2, cam_x, cam_y, cam_width, cam_height,
-        ) {
+        if self
+            .is_point_in_rectangle(x2, y2, cam_x, cam_y, cam_width, cam_height)
+        {
             return true;
         }
         false
@@ -78,10 +77,8 @@ impl Physics for LogicAccurate {
         let mut min_distance = max_distance; // Start with max distance as the limit
 
         for (block_id, block) in blocks.iter().enumerate() {
-            if blacklisted.is_some() {
-                if block_id == blacklisted.unwrap() {
-                    continue;
-                }
+            if blacklisted.is_some() && block_id == blacklisted.unwrap() {
+                continue;
             }
             let check_x;
             let check_y;
@@ -92,12 +89,8 @@ impl Physics for LogicAccurate {
                 check_x = block.x.get() as f32;
                 check_y = block.y.get() as f32 + block.height.get();
             }
-            let distance = self.get_distance_between_positions(
-                pos_x,
-                pos_y,
-                check_x as f32,
-                check_y as f32,
-            );
+            let distance = self
+                .get_distance_between_positions(pos_x, pos_y, check_x, check_y);
 
             if distance < min_distance {
                 min_distance = distance;
@@ -118,13 +111,13 @@ impl Physics for LogicAccurate {
     }
     fn get_block_input_in_distance(
         &self,
-        blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
-        blacklisted: Option<usize>,
-        top: bool,
-    ) -> Option<usize> {
+        _blocks: &Vec<Block>,
+        _pos_x: f32,
+        _pos_y: f32,
+        _max_distance: f32,
+        _blacklisted: &[ID],
+        _top: bool,
+    ) -> Option<Vec<(ID, usize)>> {
         None
     }
 }

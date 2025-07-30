@@ -1,19 +1,19 @@
 #![allow(dead_code)]
 #![allow(static_mut_refs)] // Yeah, this is probably fine
 
+
 // Bugs:
-// When a block structure is added to a another block structure, subsequent blocks of the moved blocks don't get tagged with 'recently_moved'
-// There is a line where the code keeps on erroring ->
+// The ghost render/possible connection is messed up. Sometimes not allowing for valid connections and other times allowing recursion
 
 use core::panic;
 use fontdue::Font;
 use mirl::graphics::rgb_to_u32;
 use mirl::lists::add_item_to_max_sized_list;
 use mirl::platform::framework_traits::ExtendedFramework;
+// use mirl::platform::mouse::position::RawMouseInputTrait;
 //use mirl::platform::framework_traits::Framework;
 use mirl::platform::Buffer;
 use mirl::platform::FileSystem;
-use mirl::render::draw_circle;
 use std::collections::HashMap;
 
 use crate::custom::BlockInput;
@@ -50,13 +50,27 @@ fn render_block<L: Physics>(
         physics,
     );
 }
-#[inline]
-fn get_top_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
+
+pub fn get_top_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
     // Is this broken???????
     // PROBABLY NOT BUT SOMEONE WHO CALLS THIS FUNCTION definitely IS
     let block = &blocks[index];
-    if block.connected_top.get().is_some() {
-        return block.connected_top.get().unwrap();
+    // if block.connected_top.get().is_some() {
+    //     return block.connected_top.get().unwrap();
+    // }
+    if let Some(above_connection) = block.connected_above.get(){
+        return get_top_most_block_id_or_self(blocks, index_by_block_id(&above_connection, blocks).unwrap());
+    }
+    block.id
+}
+
+pub fn get_bottom_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
+    let block = &blocks[index];
+    if let Some(block_below) = block.connected_below.get() {
+        return get_bottom_most_block_id_or_self(
+            blocks,
+            index_by_block_id(&block_below, blocks).unwrap(),
+        );
     }
     block.id
 }
@@ -67,7 +81,6 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
     height: &usize,
     camera: &Camera,
     blocks: &Vec<Block>,
-    _inline_blocks: &Vec<Block>,
     font: &Font,
     selected: &Option<usize>,
     snap_distance: f32,
@@ -78,7 +91,7 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
     if selected.is_some() {
         if selected_type_is_action {
             // Connect to block above
-            let possible = logic.get_block_in_distance(
+            let possible_connection = logic.get_block_in_distance(
                 blocks,
                 blocks[selected.unwrap()].x.get() as f32,
                 blocks[selected.unwrap()].y.get() as f32,
@@ -89,13 +102,13 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
             let block = &blocks[selected.unwrap()];
             block.possible_connection_above.set(None);
 
-            if possible.is_some() {
-                let above_block = &blocks[possible.unwrap()];
+            if possible_connection.is_some() {
+                let above_block = &blocks[possible_connection.unwrap()];
                 if is_there_a_loop_in_block_connections_for_block_internal(
                     blocks,
                     get_top_most_block_id_or_self(
                         blocks,
-                        index_by_block_id(above_block.id, blocks).unwrap(),
+                        index_by_block_id(&above_block.id, blocks).unwrap(),
                     ),
                     &mut Vec::from([block.id]),
                 ) {
@@ -134,6 +147,26 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
                 );
             }
         } else {
+            // println!(
+            //     "{:#?}",
+            //     blocks[selected.unwrap()].get_all_ids_of_all_inputs(blocks)
+            // );
+            let idk = logic.get_block_input_in_distance(
+                blocks,
+                blocks[selected.unwrap()].x.get() as f32,
+                blocks[selected.unwrap()].y.get() as f32,
+                snap_distance,
+                &mirl::lists::combined(
+                    &blocks[selected.unwrap()]
+                        .get_all_ids_of_all_inputs(blocks),
+                    blocks[selected.unwrap()].id,
+                ),
+                true,
+            );
+
+            if idk.is_some() {
+                println!("FOUND: {:?}", idk)
+            }
             //framework.log("Not implemented")
         }
     }
@@ -151,49 +184,9 @@ fn handle_and_render_action_blocks_on_screen<L: Physics>(
     let now_width = buffer.width as isize;
     let now_height = buffer.height as isize;
 
-    let block_ids: Vec<usize> = (0..blocks.len()).collect();
-
     // Reverse block order in order for overdraw to to its job in our favor
-    for id in block_ids {
-        if blocks[id].recently_moved.get() {
-            move_block_to_connected(blocks, &Some(id));
-        }
-        let block = &blocks[id];
+    let block_ids: Vec<usize> = (0..blocks.len()).rev().collect();
 
-        if !logic.is_block_visible_on_screen(
-            block,
-            camera,
-            &now_width,
-            &now_height,
-        ) {
-            continue;
-        }
-        render_block(
-            block,
-            camera,
-            buffer,
-            block_colors,
-            buffer.width,
-            buffer.height,
-            font,
-            logic,
-        );
-    }
-}
-fn handle_and_render_inline_blocks_on_screen<L: Physics>(
-    buffer: &Buffer,
-    camera: &Camera,
-    blocks: &mut Vec<Block>,
-    block_colors: &[u32],
-    font: &Font,
-    logic: &L,
-) {
-    let now_width = buffer.width as isize;
-    let now_height = buffer.height as isize;
-
-    let block_ids: Vec<usize> = (0..blocks.len()).collect();
-
-    // Reverse block order in order for overdraw to to its job in our favor
     for id in block_ids {
         if blocks[id].recently_moved.get() {
             move_block_to_connected(blocks, &Some(id));
@@ -254,11 +247,37 @@ fn get_block_id_above<L: Physics>(
 #[inline]
 fn get_block_id_under_point<L: Physics>(
     blocks: &Vec<Block>,
-    pos_x: f64,
-    pos_y: f64,
+    pos_x: isize,
+    pos_y: isize,
     logic: &L,
 ) -> Option<usize> {
     for (block_id, block) in blocks.iter().enumerate() {
+        if logic.is_point_in_rectangle(
+            pos_x,
+            pos_y,
+            block.x.get() as isize,
+            block.y.get() as isize,
+            block.width.get() as isize,
+            block.height.get() as isize,
+        ) {
+            return Some(block_id);
+        }
+    }
+    None
+}
+
+#[inline]
+fn get_specific_block_id_under_point<L: Physics>(
+    blocks: &Vec<Block>,
+    pos_x: f64,
+    pos_y: f64,
+    logic: &L,
+    block_type: u8,
+) -> Option<usize> {
+    for (block_id, block) in blocks.iter().enumerate() {
+        if block.block_type != block_type {
+            continue;
+        }
         if logic.is_point_in_rectangle(
             pos_x,
             pos_y,
@@ -272,10 +291,11 @@ fn get_block_id_under_point<L: Physics>(
     }
     None
 }
-
+/// Add caching to this!!!!
+/// The cache needs to be reset every frame
 #[inline]
-fn index_by_block_id(id: ID, blocks: &[Block]) -> Option<usize> {
-    (0..blocks.len()).find(|&block_id| blocks[block_id].id == id)
+pub fn index_by_block_id(id: &ID, blocks: &[Block]) -> Option<usize> {
+    (0..blocks.len()).find(|&block_id| blocks[block_id].id == *id)
 }
 
 fn is_there_a_loop_in_block_connections_for_block(
@@ -289,6 +309,7 @@ fn is_there_a_loop_in_block_connections_for_block(
         &mut already_checked,
     )
 }
+
 fn is_there_a_loop_in_block_connections_for_block_internal(
     blocks: &Vec<Block>,
     block_id: ID,
@@ -299,11 +320,11 @@ fn is_there_a_loop_in_block_connections_for_block_internal(
         return true;
     }
     already_checked.push(block_id);
-    let block = &blocks[index_by_block_id(block_id, blocks).unwrap()];
-    if block.connected_below.get().is_some() {
+    let block = &blocks[index_by_block_id(&block_id, blocks).unwrap()];
+    if let Some(connected_below) = block.connected_below.get(){
         return is_there_a_loop_in_block_connections_for_block_internal(
             blocks,
-            block.connected_below.get().unwrap(),
+            connected_below,
             already_checked,
         );
     }
@@ -317,14 +338,13 @@ fn is_there_a_loop_in_block_connections_for_block_internal(
     false
 }
 #[inline]
-fn custom_join(vector: Vec<ID>, separator: &str) -> String {
+fn custom_join<T: std::string::ToString>(vector: &Vec<T>, separator: &str) -> String {
     let mut out = "".to_string();
     let length = vector.len();
-    for idx in 0..length {
-        let item = vector[idx].to_string();
-        out = out + &item;
+    for (idx, item) in vector.iter().enumerate().take(length) {
+        out = out + &item.to_string();
         if idx != length - 1 {
-            out = out + separator;
+            out += separator;
         }
     }
     out
@@ -337,13 +357,13 @@ fn get_ids_connected_to_block(
     found: &mut Vec<ID>,
 ) -> Vec<ID> {
     // FIX THIS FUNCTION FOR GOD SAKE WHY ARE THERE MULTIPLE IDS??????????????????
-    let block = &blocks[index_by_block_id(top_most_block_id, &blocks).unwrap()];
+    let block = &blocks[index_by_block_id(&top_most_block_id, blocks).unwrap()];
 
     if found.contains(&block.id) {
         //framework.log("{} -> {}", block.id, block.connected_below.get().unwrap());
         panic!(
             "Infinite loop found with these ids {} with current {} (len({}))",
-            custom_join(found.to_vec(), ", "),
+            custom_join(&found.to_vec(), ", "),
             top_most_block_id,
             found.len()
         )
@@ -373,7 +393,7 @@ fn index_by_block_ids(
 ) -> Vec<Option<usize>> {
     let mut return_list = Vec::new();
     for id in ids {
-        return_list.push(index_by_block_id(*id, blocks))
+        return_list.push(index_by_block_id(id, blocks))
     }
     return_list
 }
@@ -411,17 +431,61 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
         return;
     }
     let top_block =
-        &blocks[index_by_block_id(top_block_id.unwrap(), blocks).unwrap()];
+        &blocks[index_by_block_id(&top_block_id.unwrap(), blocks).unwrap()];
     let block_query = get_ids_connected_to_block(
         top_block_id.unwrap(),
         blocks,
         &mut Vec::new(),
     );
-    // THIS ERRORS vvv
+    
+    
     let own_block_id_index = block_query
         .iter()
         .position(|&id| id == block.id)
-        .expect("FIX ME GOD DAMN IT");
+        .unwrap_or_else(|| 
+            {
+
+                let mut final_string = String::new();
+                let mut block_names = Vec::new();
+                for entry in block_query.iter(){
+                    let idx = index_by_block_id(entry, blocks).unwrap();
+                    let block = &blocks[idx];
+                    let block_name = custom_join(&block.name, "{}");
+                    block_names.push((block.id, block_name));
+
+                }
+                let mut max = 0;
+                for i in block_query.iter(){
+                    let num = usize::from(*i);
+                    if num > max{
+                        max = num;
+                    }
+                }
+                let padding = max.ilog10();
+                let mut padding_string = String::new();
+                for _ in 0..padding{
+                    padding_string+=" ";
+                }
+                for  name in block_names.iter(){
+                    final_string+=&format!("ID({}{}) -> {}\n",padding_string,usize::from(name.0),name.1);
+                }
+                final_string+=&format!("\nNot found: ID({}) -> {}", usize::from(block.id), custom_join(&blocks[index_by_block_id(&block.id, blocks).unwrap()].name, "{}"));
+                
+                let mut infos = Vec::new();
+                infos.push("A block thought it was inside a structure yet the structure wasn't connected to the block anymore - KEEP THE BLOCKS UPDATED".to_string());
+                infos.push(format!("Structure:\n{}", final_string));
+                infos.push(format!("\nBlock data: {:#?}", block));
+                if block.connected_top == block.connected_above{
+                    infos.push(format!("\nTopmost/Above Block data: {:#?}", top_block));
+                }else{
+                    infos.push(format!("\nTopmost Block data: {:#?}", top_block));
+                    if let Some(connected_above) = block.connected_above.get()
+                    {infos.push(format!("\nAbove Block data: {:#?}", blocks[index_by_block_id(&connected_above, blocks).unwrap()]));}
+
+                }
+                println!("{}", custom_join(&infos, "\n"));
+                std::process::exit(0);});
+                
 
     let blocks_to_offset_with =
         &block_query[0..own_block_id_index + 1].to_vec();
@@ -433,11 +497,13 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
         index_by_block_ids(blocks, blocks_to_offset_with),
     );
 
-    block.x.set(top_block.x.get());
-    block.y.set(
-        total_offset as u16 + top_block.y.get() - block.height.get() as u16,
-    );
-    block.recently_moved.set(false);
+    if block.recently_moved.get() {
+        block.x.set(top_block.x.get());
+        block.y.set(
+            total_offset as u16 + top_block.y.get() - block.height.get() as u16,
+        );
+        block.recently_moved.set(false);
+    }
     // blocks[above_block.unwrap()].x.set(blocks[selected.unwrap()].x.get());
     // blocks[above_block.unwrap()].y.set(
     //     blocks[selected.unwrap()].y.get()
@@ -447,7 +513,10 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
 #[inline]
 fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
     if value1 == 0.0 {
-        return 100.0; // Avoid division by zero, assuming 100% difference
+        if value2 == 0.0{
+            return 0.0;
+        }
+    return ((value2 - value1) / value1).abs() * 100.0;
     }
     ((value2 - value1) / value1).abs() * 100.0
 }
@@ -459,30 +528,28 @@ fn handle_mouse<F: ExtendedFramework<f64>>(
     // Mouse wheel movement
     let mouse_wheel_temp = framework.get_mouse_scroll();
     if mouse_wheel_temp.is_some() {
-        let extra_mul;
-        if framework.is_key_down(mirl::platform::KeyCode::RightShift) {
-            extra_mul = 10.0;
-        } else {
-            extra_mul = 1.0;
-        }
+        let extra_mul =
+            if framework.is_key_down(mirl::platform::KeyCode::RightShift) {
+                10.0
+            } else {
+                1.0
+            };
         if framework.is_key_down(mirl::platform::KeyCode::LeftControl) {
             camera.z -= mouse_wheel_temp.unwrap().1 * extra_mul;
+        } else if framework.is_key_down(mirl::platform::KeyCode::LeftShift) {
+            camera.y -= (mouse_wheel_temp.unwrap().0
+                * scroll_multiplier
+                * extra_mul) as isize;
+            camera.x -= (mouse_wheel_temp.unwrap().1
+                * scroll_multiplier
+                * extra_mul) as isize;
         } else {
-            if framework.is_key_down(mirl::platform::KeyCode::LeftShift) {
-                camera.y -= (mouse_wheel_temp.unwrap().0
-                    * scroll_multiplier
-                    * extra_mul) as isize;
-                camera.x -= (mouse_wheel_temp.unwrap().1
-                    * scroll_multiplier
-                    * extra_mul) as isize;
-            } else {
-                camera.x -= (mouse_wheel_temp.unwrap().0
-                    * scroll_multiplier
-                    * extra_mul) as isize;
-                camera.y -= (mouse_wheel_temp.unwrap().1
-                    * scroll_multiplier
-                    * extra_mul) as isize;
-            }
+            camera.x -= (mouse_wheel_temp.unwrap().0
+                * scroll_multiplier
+                * extra_mul) as isize;
+            camera.y -= (mouse_wheel_temp.unwrap().1
+                * scroll_multiplier
+                * extra_mul) as isize;
         }
     }
 }
@@ -490,7 +557,7 @@ fn reorder_blocks(
     mouse_down: bool,
     blocks: &mut Vec<Block>,
     camera: &mut Camera,
-    mouse_delta: (f64, f64),
+    mouse_delta: (isize, isize),
     selected: &mut Option<usize>,
 ) {
     if mouse_down {
@@ -500,95 +567,86 @@ fn reorder_blocks(
             *selected = Some(0);
             blocks[idx]
                 .x
-                .set((blocks[idx].x.get() as f64 + mouse_delta.0) as u16);
+                .set((blocks[idx].x.get() as isize + mouse_delta.0) as u16);
             blocks[idx]
                 .y
-                .set((blocks[idx].y.get() as f64 + mouse_delta.1) as u16);
+                .set((blocks[idx].y.get() as isize + mouse_delta.1) as u16);
         } else {
-            camera.x -= mouse_delta.0 as isize;
-            camera.y -= mouse_delta.1 as isize;
+            camera.x -= mouse_delta.0;
+            camera.y -= mouse_delta.1;
         }
     }
 }
-fn handle_or_get_selected<
-    //F: platform::shared::Framework,
+fn handle_mouse_or_get_selected<
+    F: mirl::platform::framework_traits::Framework,
     L: Physics,
 >(
     mouse_down: bool,
     last_mouse_down: bool,
     blocks: &mut Vec<Block>,
     camera: &mut Camera,
-    mouse_pos: (f64, f64),
+    mouse_pos: (isize, isize),
     // mouse_delta: (f32, f32),
-    // framework: &F,
+    framework: &F,
     // scroll_multiplier: f32,
     selected: Option<usize>,
     logic: &L,
-    selected_type_is_action: bool,
+    _selected_type_is_action: bool,
+    cursor_style: &mut Option<mirl::platform::Cursor>,
+    cursors: &mut mirl::platform::mouse::Cursors,
 ) -> Option<usize> {
     // There are too many problems with dealing with null when the mouse is outside the window, so instead we just check if the mouse is with in the window :)
     let mut selected = selected;
-    let _selected_type_is_action = selected_type_is_action;
-    if mouse_down {
-        if !last_mouse_down {
-            selected = get_block_id_under_point(
-                &blocks,
-                mouse_pos.0 + camera.x as f64,
-                mouse_pos.1 + camera.y as f64,
-                logic,
-            );
+    let under_mouse = get_block_id_under_point(
+        blocks,
+        mouse_pos.0 + camera.x,
+        mouse_pos.1 + camera.y,
+        logic,
+    );
+    if under_mouse.is_some() {
+        if mouse_down {
+            *cursor_style = Some(cursors.closed_hand);
+        } else {
+            *cursor_style = Some(cursors.open_hand);
         }
-        if selected.is_some() {
-            let list = get_ids_connected_to_block(
-                get_top_most_block_id_or_self(&blocks, selected.unwrap()),
-                &blocks,
-                &mut Vec::new(),
-            );
+    } else {
+        *cursor_style = Some(cursors.default)
+    }
+
+    if mouse_down {
+        // No clue what this is about but it works so I'm not gonna change it
+        if !last_mouse_down {
+            selected = under_mouse;
+        }
+        if let Some(selected) = selected {
+            *cursor_style = Some(cursors.closed_hand);
             // When this block is selected, disconnect it from the blocks above
-            blocks[selected.unwrap()].connected_top.set(None);
-
-            // find position of element with value blocks[selected.unwrap()].id
-            let split_point = list
-                .iter()
-                .position(|block| *block == blocks[selected.unwrap()].id);
-
-            // "Split point" -> below gets moved, above stays put, split point is selected block
-            if split_point.is_none() {
-                panic!("The block thought it was hanging from a block structure that isn't actually connected to this block anymore (Currently happening when replacing a block I think)")
-            }
-
-            if split_point.unwrap() > 0 {
-                // Remove the connected tag from the block this block is connected to (But only if that block above exists!)
-                let block_above = &blocks[index_by_block_id(
-                    list[split_point.unwrap() - 1],
-                    &blocks,
-                )
-                .unwrap()];
-                block_above.connected_below.set(None);
-            }
-
-            // Tell blocks below that they have been moved
-            for id in list[split_point.unwrap()..].iter() {
-                blocks[index_by_block_id(*id, &blocks).unwrap()]
-                    .recently_moved
-                    .set(true);
-            }
+            let selected_block = &blocks[selected];
+            selected_block.disconnect_above(blocks);
+            // If ctrl is pressed, the structure below should be connected with the structure above
+            if framework.is_key_down(mirl::platform::KeyCode::LeftControl){
+                selected_block.connect_below_to_above(blocks);
+            }else{
+            selected_block.update_topmost(blocks, true);}
         }
     } else {
         // Connect block previously selected if possible
         if selected.is_some() {
             let block = &blocks[selected.unwrap()];
+            if block.block_type == 1 {
+                return None;
+            }
             if block.possible_connection_above.get().is_some() {
                 let connection_id_above =
                     block.possible_connection_above.get().unwrap();
 
                 if is_there_a_loop_in_block_connections_for_block_internal(
-                    &blocks,
+                    blocks,
                     get_top_most_block_id_or_self(
-                        &blocks,
+                        blocks,
                         index_by_block_id(
-                            block.possible_connection_above.get().unwrap(),
-                            &blocks,
+                            &block.possible_connection_above.get().unwrap(),
+                            blocks,
                         )
                         .unwrap(),
                     ),
@@ -598,28 +656,45 @@ fn handle_or_get_selected<
                 }
                 // Get above block
                 let block_above_index =
-                    index_by_block_id(connection_id_above, &blocks).unwrap();
+                    index_by_block_id(&connection_id_above, blocks).unwrap();
                 let above_block = &blocks[block_above_index];
+                if let Some(block_below_above) =
+                    above_block.connected_below.get()
+                {
+                    let self_bottom_most_id = get_bottom_most_block_id_or_self(
+                        blocks,
+                        index_by_block_id(&block.id, blocks).unwrap(),
+                    );
+                    let self_bottom_most = &blocks[index_by_block_id(
+                        &self_bottom_most_id,
+                        blocks,
+                    )
+                    .unwrap()];
+                    self_bottom_most
+                        .connected_below
+                        .set(Some(block_below_above));
+                }
+
                 // Tell current block to connect above
-                block.connected_top.set(Some(get_top_most_block_id_or_self(
-                    &blocks,
-                    block_above_index,
-                )));
-                // WE CURRENTLY JUST REPLACE THE CURRENT BLOCK-> THESE BLOCKS SHOULD BE APPENDED TO THE CURRENT BLOCKS AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHHHHHHHHHHH
-                // Dear past me; EXPLAIN THE CONCEPT, NOT THE EXECUTION, DUMBASS
+                // block.connected_top.set(Some(get_top_most_block_id_or_self(
+                //     blocks,
+                //     block_above_index,
+                // )));
+                block.connected_above.set(Some(above_block.id));
                 above_block.connected_below.set(Some(block.id));
+                block.update_topmost(blocks, true);
             }
 
             // Set current possible above block to none
             block.possible_connection_above.set(None);
-            block.recently_moved.set(true);
+            //block.recently_moved.set(true); // Did commenting this out do anything?
         }
         selected = None;
     }
 
     selected
 }
-use serde_json;
+
 pub fn parse_translations(
     csv_data: &str,
     lang: &str,
@@ -737,7 +812,7 @@ fn load_blocks<F: FileSystem, L: Physics>(
                 } else {
                     errors
                         .push(format!("Missing output for {}", internal_name));
-                    output = "You aren't supposed to read me".into();
+                    output = "You aren't supposed to read me either".into();
                 }
 
                 if !block_output_types.contains(&output) {
@@ -758,7 +833,7 @@ fn load_blocks<F: FileSystem, L: Physics>(
                 let _empty = serde_json::Value::Array(Vec::new());
                 let pre_inputs = block
                     .get("inputs")
-                    .unwrap_or_else(|| &_empty)
+                    .unwrap_or(&_empty)
                     .as_array()
                     .expect("Error unwrapping");
 
@@ -801,13 +876,12 @@ fn load_blocks<F: FileSystem, L: Physics>(
                 //framework.log(">{:?}", pre_inputs);
 
                 let inline = block_type == "inline";
-                let block_type_id;
-                if inline {
-                    block_type_id = 1
+                let block_type_id = if inline {
+                    1
                 } else {
-                    block_type_id = 0
-                }
-                if errors.len() > 0 {
+                    0
+                };
+                if !errors.is_empty() {
                     continue;
                 }
 
@@ -838,7 +912,7 @@ fn load_blocks<F: FileSystem, L: Physics>(
         }
     }
 
-    if errors.len() > 0 {
+    if !errors.is_empty() {
         panic!(
             "Unable to load plugins due to the following error(s):\n{:#?}",
             errors
@@ -874,6 +948,12 @@ pub fn generate_random_color() -> u32 {
 //     name = title_case(&name);
 //     return name;
 // }
+#[inline(always)]
+fn debug(string: &str) {
+    if false {
+        println!("{}", string);
+    }
+}
 
 // Goal: Render 1000 Blocks at >=60 fps
 // Current:
@@ -893,30 +973,37 @@ pub fn main_loop<
     // logic: &L,
     buffer: &Buffer,
 ) {
-    let _physics = crate::logic::LogicAccurate::new();
+    debug("Enter - Setting up physics and workspace list");
+    let physics = crate::logic::LogicFast::new();
     let mut workspaces =
-        Vec::from([WorkSpace::new(&_physics), WorkSpace::new(&_physics)]);
+        Vec::from([WorkSpace::new(&physics), WorkSpace::new(&physics)]);
     let mut current_workspace_id = 0;
     let workspace_length = workspaces.len();
 
     let mut current_workspace = &mut workspaces[current_workspace_id];
-
+    debug("Setting window icon");
     let icon: Buffer = file_system
         .get_file_contents("idk.ico")
         .unwrap()
         .as_image()
         .unwrap()
         .into();
+
     framework.set_icon(&icon.data, icon.width as u32, icon.height as u32);
 
+    debug("Loading custom cursors");
     let cursors = framework.load_custom_cursor(
         U2::new(0),
         rgb_to_u32(100, 20, 250),
         rgb_to_u32(80, 30, 240),
     );
+    // debug("Loading Raw Cursor Inputs");
+    // let raw_mouse_inputs = mirl::platform::mouse::position::RawMouseInput::new(
+    //     framework.get_window_handle(),
+    // )
+    // .unwrap();
 
-    framework.set_cursor_style(&cursors.default);
-
+    debug("Setting default variables");
     //framework.log("{:?}", icon.1);
     //platform::log("Entered main loop");
     let snap_distance = 70.0;
@@ -929,33 +1016,46 @@ pub fn main_loop<
     let mut delta_time;
     let mut fps;
 
-    let mut mouse_pos = framework.get_mouse_position().unwrap_or((0.0, 0.0));
+    let mut mouse_pos = framework.get_mouse_position().unwrap_or((0, 0));
     let mut mouse_delta;
+    let mut mouse_held;
+    let mut mouse_down_temp;
+    let mut mouse_down = false;
+    let mut mouse_outside;
 
     //let mut color_names: Vec<String> = Vec::new();
     let mut block_output_color_rgb: Vec<u32> = Vec::new();
     let mut block_output_color_names: Vec<String> = Vec::new();
 
+    let mut fps_list: Vec<u64> = Vec::new();
+
+    let mut selected: Option<usize> = None;
+    let mut selected_type_is_action: bool = false;
+
+    let mut stable_fps: u64;
+
+    let mut last_right_down = false;
+    let mut last_left_down = false;
+
     //color_names.push("bool".to_string());
     // block_output_color_rgb.push(mirl::graphics::rgb_to_u32(50, 80, 255));
     // block_output_color_names.push("bool".to_string());
-    let file_system =
-        mirl::platform::file_system::NativeFileSystem::new(vec!["inter.ttf"]);
+    debug("Loading Font, translations, blocks, and colors");
     let font =
         file_system.get_file_contents("inter.ttf").unwrap().as_font().unwrap();
 
     let mut translation = HashMap::new();
 
     let (action_blocks, inline_blocks) = load_blocks(
-        &file_system,
+        file_system,
         &mut block_output_color_names,
         &mut block_output_color_rgb,
         &mut translation,
         &font,
         current_workspace,
     );
-    current_workspace.action_blocks.extend(action_blocks.iter().cloned());
-    current_workspace.inline_blocks.extend(inline_blocks.iter().cloned());
+    current_workspace.blocks.extend(action_blocks.iter().cloned());
+    current_workspace.blocks.extend(inline_blocks.iter().cloned());
 
     // for id in 0..1000 {
     //     blocks.push(Block::new(
@@ -976,27 +1076,16 @@ pub fn main_loop<
     //     ))
     // }
 
-    let mut mouse_held;
-    let mut mouse_down_temp;
-    let mut mouse_down = false;
-
-    let mut fps_list: Vec<u64> = Vec::new();
-
-    let mut selected: Option<usize> = None;
-    let mut selected_type_is_action: bool = false;
-
-    let mut mouse_outside;
-    let mut stable_fps: u64;
-
-    let mut last_right_down = false;
-    let mut last_left_down = false;
-
     //platform::log("Starting main loop");
     frame_start = framework.get_time();
 
     while framework.is_open() {
+        debug("Start of loop");
         buffer.clear();
 
+        let mut cursor_style: Option<mirl::platform::Cursor> = None;
+
+        debug("Checking for change in workspace");
         let mut reload_workspace = false;
         if framework.is_key_down(mirl::platform::KeyCode::Right)
             && !last_right_down
@@ -1020,33 +1109,49 @@ pub fn main_loop<
         }
         if reload_workspace {
             current_workspace = &mut workspaces[current_workspace_id];
-            if current_workspace.action_blocks.len() == 0 {
-                current_workspace
-                    .action_blocks
-                    .extend(action_blocks.iter().cloned());
-                current_workspace
-                    .inline_blocks
-                    .extend(inline_blocks.iter().cloned())
+            if current_workspace.blocks.is_empty() {
+                current_workspace.blocks.extend(action_blocks.iter().cloned());
+                current_workspace.blocks.extend(inline_blocks.iter().cloned())
             }
         }
 
-        // if (buffer_pointer as usize) % 16 == 0 {
-        //     framework.log("Buffer is 16-byte aligned");
-        // } else {
-        //     framework.log("Buffer is NOT 16-byte aligned");
-        // }
+        debug("Getting and handling mouse info");
         // Mouse stuff and block(/camera) selection/movement
         mouse_delta = mouse_pos;
         mouse_pos = framework.get_mouse_position().unwrap_or(mouse_pos);
 
         mouse_delta = mouse_pos.sub(mouse_delta);
+
+        // mirl::render::draw_circle(
+        //     buffer,
+        //     mouse_pos.0 as usize,
+        //     mouse_pos.1 as usize,
+        //     10,
+        //     rgb_to_u32(255, 0, 0),
+        //     true,
+        // );
+        // println!(
+        //     "{:?} | {:.3?} | {:?}",
+        //     raw_mouse_delta,
+        //     mouse_delta,
+        //     raw_mouse_delta.sub(mouse_delta.tuple_2_into())
+        // );
+        // mirl::render::draw_circle(
+        //     buffer,
+        //     (mouse_pos.0 + raw_mouse_delta.0 as isize) as usize,
+        //     (mouse_pos.1 + raw_mouse_delta.1 as isize) as usize,
+        //     10,
+        //     rgb_to_u32(0, 0, 255),
+        //     true,
+        // );
+
         mouse_outside = !current_workspace.logic.is_point_in_rectangle(
             mouse_pos.0,
             mouse_pos.1,
-            0.0,
-            0.0,
-            buffer.width as f64,
-            buffer.height as f64,
+            0,
+            0,
+            buffer.width as isize,
+            buffer.height as isize,
         );
 
         mouse_down_temp = mouse_down;
@@ -1060,55 +1165,40 @@ pub fn main_loop<
         );
 
         if !mouse_outside {
-            selected = handle_or_get_selected(
+            debug("Getting new selected");
+            selected = handle_mouse_or_get_selected(
                 mouse_down,
                 mouse_held,
-                &mut current_workspace.action_blocks,
+                &mut current_workspace.blocks,
                 &mut current_workspace.camera,
                 mouse_pos,
                 // mouse_delta,
-                // framework,
+                framework,
                 // scroll_multiplier,
                 selected,
                 current_workspace.logic,
                 selected_type_is_action,
+                &mut cursor_style,
+                &mut cursors.clone(),
             );
-            if selected.is_some() && !mouse_held {
-                selected_type_is_action = true;
-            } else {
-                selected = handle_or_get_selected(
-                    mouse_down,
-                    mouse_held,
-                    &mut current_workspace.inline_blocks,
-                    &mut current_workspace.camera,
-                    mouse_pos,
-                    // mouse_delta,
-                    // framework,
-                    // scroll_multiplier,
-                    selected,
-                    current_workspace.logic,
-                    selected_type_is_action,
-                );
-                if selected.is_some() && !mouse_held {
-                    selected_type_is_action = false;
-                }
-            }
+        }
+        if selected.is_some() && !mouse_held {
+            selected_type_is_action =
+                current_workspace.blocks[selected.unwrap()].block_type == 0;
         }
 
         if mouse_down {
             if selected.is_some() {
                 //framework.log("SELECTED");
-                framework.set_cursor_style(&cursors.closed_hand);
+                cursor_style = Some(cursors.closed_hand);
             } else {
-                framework.set_cursor_style(&cursors.open_hand);
+                cursor_style = Some(cursors.all_scroll);
                 //framework.log("UNSELECTED");
             }
         } else {
-            framework.set_cursor_style(&cursors.default);
+            //framework.set_cursor_style(&cursors.default);
         }
-        if framework.is_key_down(mirl::platform::KeyCode::B) {
-            framework.set_cursor_style(&cursors.default);
-        }
+
         // if framework.is_key_down(KeyCode::B) {
         //     platform::cursor::set_cursor_style_windows(
         //         handle,
@@ -1117,53 +1207,43 @@ pub fn main_loop<
         // }
 
         //framework.log("Selected: {:?}, {}", selected, selected_type_is_action);
-        if selected_type_is_action {
-            reorder_blocks(
-                mouse_down,
-                &mut current_workspace.action_blocks,
-                &mut current_workspace.camera,
-                mouse_delta,
-                &mut selected,
-            );
-        } else {
-            reorder_blocks(
-                mouse_down,
-                &mut current_workspace.inline_blocks,
-                &mut current_workspace.camera,
-                mouse_delta,
-                &mut selected,
-            );
-        }
-        if selected.is_some() {
-            if selected.unwrap() != 0 {
-                panic!("Selected is not 0 -> Reordering failed?");
-            }
-        }
-        //############################################
-        handle_and_render_action_blocks_on_screen(
-            &buffer,
-            &current_workspace.camera,
-            &mut current_workspace.action_blocks,
-            &block_output_color_rgb,
-            &font,
-            current_workspace.logic,
-        );
-        handle_and_render_inline_blocks_on_screen(
-            &buffer,
-            &current_workspace.camera,
-            &mut current_workspace.inline_blocks,
-            &block_output_color_rgb,
-            &font,
-            current_workspace.logic,
+        debug("Reordering block structure");
+        reorder_blocks(
+            mouse_down,
+            &mut current_workspace.blocks,
+            &mut current_workspace.camera,
+            mouse_delta,
+            &mut selected,
         );
 
+        if selected.is_some() && selected.unwrap() != 0 {
+            panic!("Selected is not 0 -> Reordering failed?");
+        }
+        //############################################
+        debug("Handling/Rendering blocks on screen");
+        handle_and_render_action_blocks_on_screen(
+            buffer,
+            &current_workspace.camera,
+            &mut current_workspace.blocks,
+            &block_output_color_rgb,
+            &font,
+            current_workspace.logic,
+        );
+        // handle_and_render_action_blocks_on_screen(
+        //     buffer,
+        //     &current_workspace.camera,
+        //     &mut current_workspace.blocks,
+        //     &block_output_color_rgb,
+        //     &font,
+        //     current_workspace.logic,
+        // );
+        debug("Handling Connection/Handle Ghost block");
         handle_connection_and_render_ghost_block(
-            &buffer,
+            buffer,
             &buffer.width,
             &buffer.height,
             &current_workspace.camera,
-            &current_workspace.action_blocks,
-            &current_workspace.inline_blocks,
+            &current_workspace.blocks,
             &font,
             &selected,
             snap_distance,
@@ -1171,48 +1251,51 @@ pub fn main_loop<
             &block_output_color_rgb,
             selected_type_is_action,
         );
-        let mouse_size = 4;
-        let mouse_size_half = mouse_size as f64 / 2.0;
 
-        if current_workspace.logic.is_rectangle_visible_on_screen(
-            mouse_pos.0 - mouse_size_half,
-            mouse_pos.1 - mouse_size_half,
-            mouse_size as f64,
-            mouse_size as f64,
-            &current_workspace.camera,
-            &(buffer.width as isize),
-            &(buffer.width as isize),
-        ) {
-            draw_circle(
-                buffer,
-                mouse_pos.0 as usize,
-                mouse_pos.1 as usize,
-                mouse_size,
-                rgb_to_u32(100, 20, 200),
-                true,
-            );
+        if framework.is_key_down(mirl::platform::KeyCode::I){
+            if let Some(selected_block_index) = selected{
+                let all_connected = get_ids_connected_to_block(current_workspace.blocks[selected_block_index].id, &current_workspace.blocks, &mut Vec::new());
+                println!("\n\n");
+                for id in all_connected{
+                println!("BLOCK INFOS:\n{:?}", current_workspace.blocks[index_by_block_id(&id, &current_workspace.blocks).unwrap()]);
+
+                }
+            }
         }
+
         //############################################
-        framework.update(&buffer);
+        debug("Update framework with buffer");
+        framework.update(buffer);
+        debug("Calculating FPS");
         delta_time = frame_start.get_elapsed_time();
         frame_start = framework.get_time();
 
         if delta_time != 0.0 {
-            fps = mirl::time::MILLIS_PER_SEC as f64 / delta_time;
+            fps = 1.0 / delta_time;
         } else {
             fps = f64::MAX;
         }
+        let fps_average = fps_list.average().unwrap_or_default();
 
-        add_item_to_max_sized_list(&mut fps_list, fps as usize, fps as u64);
+        add_item_to_max_sized_list(
+            &mut fps_list,
+            fps_average as usize,
+            fps as u64,
+        );
 
-        if fps_list.len() == 0 {
+        if !fps_list.is_empty() {
             stable_fps = 0;
         } else {
-            stable_fps = fps_list.average();
+            stable_fps = fps_average;
+        }
+        if let Some(cursor) = cursor_style {
+            debug("Setting cursors style");
+            framework.set_cursor_style(&cursor);
         }
 
+        debug("Updating title");
         framework.set_title(
-            to_monospace_unicode(&format!(
+            &to_monospace_unicode(&format!(
                 "Rust Window {:>4}/{:>5.0} FPS (Sampling {:>3}) | {:>8}x {:>8}y {:>4}z | {:>8}x {:>8}y -> {:>4} {:>4} -> {:>3} {:>3} | {}A + {}I = {}T",
                 stable_fps,
                 fps,
@@ -1220,18 +1303,17 @@ pub fn main_loop<
                 current_workspace.camera.x,
                 current_workspace.camera.y,
                 current_workspace.camera.z,
-                current_workspace.camera.x + mouse_pos.0 as isize,
-                current_workspace.camera.y + mouse_pos.1 as isize,
+                current_workspace.camera.x + mouse_pos.0 ,
+                current_workspace.camera.y + mouse_pos.1 ,
                 mouse_pos.0,
                 mouse_pos.1,
                 mouse_delta.0,
                 mouse_delta.1,
-                current_workspace.action_blocks.len(),
-                current_workspace.inline_blocks.len(),
-                current_workspace.action_blocks.len()+
-                current_workspace.inline_blocks.len()
+                current_workspace.blocks.len(),
+                current_workspace.blocks.len(),
+                current_workspace.blocks.len()+
+                current_workspace.blocks.len()
             ))
-            .as_str(),
         );
         // if selected.is_some() {
         //     let block = &blocks[selected.unwrap()];
@@ -1251,7 +1333,7 @@ pub fn main_loop<
         //     // ));
         //     framework.wait(sleep_time);
         // }
-        //platform::log("Got through iter")
+        debug("End of loop");
     }
 }
 

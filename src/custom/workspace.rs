@@ -5,18 +5,16 @@ use super::{Block, Camera};
 pub struct WorkSpace<'a, L: Physics> {
     pub logic: &'a L,
     block_counter: usize,
-    pub action_blocks: Vec<Block>,
-    pub inline_blocks: Vec<Block>,
+    pub blocks: Vec<Block>,
     pub camera: Camera,
 }
 
 impl<'a, L: Physics> WorkSpace<'a, L> {
     pub fn new(logic: &'a L) -> Self {
         Self {
-            logic: logic,
+            logic,
             block_counter: 0,
-            action_blocks: Vec::new(),
-            inline_blocks: Vec::new(),
+            blocks: Vec::new(),
             camera: Camera::new(),
         }
     }

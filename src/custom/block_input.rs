@@ -1,6 +1,6 @@
 // use crate::all::get_length_of_text_in_font;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlockInput {
     input_type: String,
     block_id: Option<usize>,
