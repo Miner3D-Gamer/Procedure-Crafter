@@ -1,4 +1,6 @@
-#[repr(transparent)]
+use crate::internal::Block;
+
+#[repr(transparent)] // No clue what this means :)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ID(usize);
 
@@ -26,5 +28,16 @@ impl<T> std::ops::IndexMut<ID> for Vec<T> {
 impl std::fmt::Display for ID {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+
+pub trait UsizeGetID {
+    fn get_id_of_idx(self, blocks: &Vec<Block>) -> ID;
+}
+
+impl UsizeGetID for usize {
+    fn get_id_of_idx(self, blocks: &Vec<Block>) -> ID {
+        blocks[self].id
     }
 }

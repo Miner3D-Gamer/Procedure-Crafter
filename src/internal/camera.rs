@@ -1,3 +1,5 @@
+use crate::CoordinateType;
+
 pub struct Camera {
     pub x: isize,
     pub y: isize,
@@ -7,8 +9,8 @@ pub struct Camera {
 impl Camera {
     pub fn new() -> Self {
         Camera {
-            x: (u16::MAX / 2) as isize,
-            y: (u16::MAX / 2) as isize,
+            x: (CoordinateType::MAX / 2) as isize,
+            y: (CoordinateType::MAX / 2) as isize,
             z: 1.0,
         }
     }

@@ -369,27 +369,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
 
 [[package]]
-name = "csv"
-version = "1.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acdc4883a9c96732e4733212c01447ebd805833b7275a73ca3ee080fd77afdaf"
-dependencies = [
- "csv-core",
- "itoa",
- "ryu",
- "serde",
-]
-
-[[package]]
-name = "csv-core"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d02f3b0da4c6504f86e9cd789d8dbafab48c2321be74e9987593de5a894d93d"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "data-url"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1110,7 +1089,9 @@ dependencies = [
 
 [[package]]
 name = "mirl"
-version = "3.5.0"
+version = "3.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eab55518fd0b84bc7a08cbb4f8027666fff354738ae54e51b2e4d27095129b2b"
 dependencies = [
  "ahash",
  "crossterm",
@@ -1335,7 +1316,6 @@ version = "0.1.0"
 dependencies = [
  "cocoa",
  "core-foundation",
- "csv",
  "derive_more",
  "fontdue",
  "getrandom 0.3.2",
@@ -1343,6 +1323,7 @@ dependencies = [
  "js-sys",
  "minifb",
  "mirl",
+ "num-traits",
  "objc",
  "raw-window-handle 0.6.2",
  "serde",

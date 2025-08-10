@@ -1,17 +1,15 @@
 use crate::{
-    custom::{Block, Camera, ID},
-    logic::Physics,
+    internal::{Block, Camera, ID},
+    logic::{get_closest_input, Physics},
+    SizeType,
 };
 
 pub struct LogicAccurate {}
 
-impl LogicAccurate {
-    pub fn new() -> Self {
+impl Physics for LogicAccurate {
+    fn new() -> Self {
         LogicAccurate {}
     }
-}
-
-impl Physics for LogicAccurate {
     fn is_in_any_hole(
         &self,
         x: isize,
@@ -67,9 +65,9 @@ impl Physics for LogicAccurate {
     fn get_block_in_distance(
         &self,
         blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
         blacklisted: Option<usize>,
         top: bool,
     ) -> Option<usize> {
@@ -83,11 +81,11 @@ impl Physics for LogicAccurate {
             let check_x;
             let check_y;
             if top {
-                check_x = block.x.get() as f32;
-                check_y = block.y.get() as f32;
+                check_x = block.x.get() as SizeType;
+                check_y = block.y.get() as SizeType;
             } else {
-                check_x = block.x.get() as f32;
-                check_y = block.y.get() as f32 + block.height.get();
+                check_x = block.x.get() as SizeType;
+                check_y = block.y.get() as SizeType + block.height.get();
             }
             let distance = self
                 .get_distance_between_positions(pos_x, pos_y, check_x, check_y);
@@ -102,22 +100,47 @@ impl Physics for LogicAccurate {
     }
     fn get_distance_between_positions(
         &self,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-    ) -> f32 {
+        x1: SizeType,
+        y1: SizeType,
+        x2: SizeType,
+        y2: SizeType,
+    ) -> SizeType {
         ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt()
     }
     fn get_block_input_in_distance(
         &self,
-        _blocks: &Vec<Block>,
-        _pos_x: f32,
-        _pos_y: f32,
-        _max_distance: f32,
-        _blacklisted: &[ID],
+        blocks: &Vec<Block>,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
+        blacklisted: &[ID],
         _top: bool,
     ) -> Option<Vec<(ID, usize)>> {
-        None
+        let mut smallest = SizeType::MAX;
+        let mut smallest_path = Vec::new();
+        for block in blocks {
+            if blacklisted.contains(&block.id) {
+                continue;
+            }
+            let distances = block.get_inputs_in_range(
+                (pos_x, pos_y),
+                (0.0, 0.0),
+                max_distance,
+                self,
+                blacklisted,
+                blocks,
+            );
+            if let Some(distance) = distances {
+                let (path, dis) = get_closest_input(distance);
+                if dis < smallest {
+                    smallest_path = path;
+                    smallest = dis;
+                }
+            }
+        }
+        if smallest_path.is_empty() {
+            return None;
+        }
+        Some(smallest_path)
     }
 }

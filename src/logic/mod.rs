@@ -1,4 +1,7 @@
 pub trait Physics {
+    fn new() -> Self
+    where
+        Self: Sized;
     fn is_in_any_hole(
         &self,
         x: isize,
@@ -15,7 +18,9 @@ pub trait Physics {
         buffer_width: &isize,
         buffer_height: &isize,
     ) -> bool;
-    fn is_point_in_rectangle<T: mirl::math::Number>(
+    fn is_point_in_rectangle<
+        T: Copy + PartialOrd + std::ops::Add<Output = T>,
+    >(
         &self,
         x: T,
         y: T,
@@ -41,19 +46,19 @@ pub trait Physics {
     fn get_block_in_distance(
         &self,
         blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
         blacklisted: Option<usize>,
         top: bool,
     ) -> Option<usize>;
     fn get_distance_between_positions(
         &self,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-    ) -> f32;
+        x1: SizeType,
+        y1: SizeType,
+        x2: SizeType,
+        y2: SizeType,
+    ) -> SizeType;
     fn is_block_visible_on_screen(
         &self,
         block: &Block,
@@ -62,8 +67,8 @@ pub trait Physics {
         height: &isize,
     ) -> bool {
         self.is_rectangle_visible_on_screen(
-            block.x.get() as f32,
-            block.y.get() as f32,
+            block.x.get() as SizeType,
+            block.y.get() as SizeType,
             block.width.get(),
             block.height.get(),
             camera,
@@ -74,9 +79,9 @@ pub trait Physics {
     fn get_block_input_in_distance(
         &self,
         blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
         blacklisted: &[ID],
         top: bool,
     ) -> Option<Vec<(ID, usize)>>;
@@ -88,10 +93,39 @@ pub use fast::LogicFast;
 mod accurate;
 pub use accurate::LogicAccurate;
 
-use crate::custom::{Block, Camera, ID};
+use crate::{
+    internal::{block::InputRememberer, Block, Camera, ID},
+    SizeType,
+};
 
 const _: fn() = || {
     fn assert_impl<T: Physics>() {}
     assert_impl::<LogicFast>();
     assert_impl::<LogicAccurate>();
 };
+
+pub fn get_closest_input(
+    inputs: InputRememberer,
+) -> (Vec<(ID, usize)>, SizeType) {
+    let mut smallest_path = Vec::new();
+    let mut smallest = SizeType::MAX;
+
+    for (spot, more, distance) in inputs.internal_inputs {
+        let mut current_path = vec![(inputs.own_id, spot)];
+        let distance = distance.unwrap();
+
+        if let Some(deeper) = more {
+            let (deeper_path, deeper_distance) = get_closest_input(deeper);
+            if deeper_distance < smallest {
+                current_path.extend(deeper_path);
+                smallest_path = current_path;
+                smallest = deeper_distance;
+            }
+        } else if distance < smallest {
+            smallest = distance;
+            smallest_path = current_path;
+        }
+    }
+
+    (smallest_path, smallest)
+}

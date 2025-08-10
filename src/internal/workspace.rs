@@ -2,7 +2,7 @@ use crate::logic::Physics;
 
 use super::{Block, Camera};
 
-pub struct WorkSpace<'a, L: Physics> {
+pub struct WorkSpace<'a, L: Physics + Sized> {
     pub logic: &'a L,
     block_counter: usize,
     pub blocks: Vec<Block>,

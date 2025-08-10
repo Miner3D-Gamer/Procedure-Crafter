@@ -3,28 +3,92 @@
 
 
 // Bugs:
-// The ghost render/possible connection is messed up. Sometimes not allowing for valid connections and other times allowing recursion
+// The ghost render is messed up not allowing for valid connections
 
 use core::panic;
 use fontdue::Font;
 use mirl::graphics::rgb_to_u32;
 use mirl::lists::add_item_to_max_sized_list;
 use mirl::platform::framework_traits::ExtendedFramework;
+use mirl::platform::framework_traits::Framework;
 // use mirl::platform::mouse::position::RawMouseInputTrait;
 //use mirl::platform::framework_traits::Framework;
 use mirl::platform::Buffer;
 use mirl::platform::FileSystem;
 use std::collections::HashMap;
 
-use crate::custom::BlockInput;
-use crate::custom::WorkSpace;
+use crate::internal::id::UsizeGetID;
+use crate::internal::BlockInput;
+use crate::internal::WorkSpace;
 use crate::logic::Physics;
 
-use crate::custom::Block;
-use crate::custom::Camera;
-use crate::custom::ID;
+use crate::internal::Block;
+use crate::internal::Camera;
+use crate::internal::ID;
 use crate::idk::draw_block;
+use crate::CoordinateType;
+use crate::SizeType;
 use mirl::extensions::*;
+
+
+
+
+type KeyMap = HashMap<&'static str, Vec<mirl::platform::KeyCode>>;
+static KEY_BINDS: std::sync::LazyLock<std::sync::Mutex<KeyMap>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(KeyMap::new())
+});
+
+
+/// Adds or updates a key. Returns the previous value if any.
+pub fn add_key_bind(
+    key: &'static str,
+    code: mirl::platform::KeyCode,
+) -> Result<std::option::Option<std::vec::Vec<mirl::platform::KeyCode>>, String> {
+    let mut keys = get_key_bind(key);
+    let mut map = KEY_BINDS
+        .lock()
+        .map_err(|_| "Failed to lock KEY_BINDS (poisoned)".to_string())?;
+    keys.push(code);
+
+    Ok(map.insert(key, keys))
+}
+
+/// Removes a key. Returns the removed value if it existed.
+pub fn remove_key_bind(
+    key: &'static str,
+    code: mirl::platform::KeyCode,
+) -> Result<std::option::Option<std::vec::Vec<mirl::platform::KeyCode>>, String> {
+    let mut keys = get_key_bind(key);
+    let mut map = KEY_BINDS
+        .lock()
+        .map_err(|_| "Failed to lock KEY_BINDS (poisoned)".to_string())?;
+    if let Some(pos) = keys.iter().position(|x| x == &code) {
+    keys.remove(pos);
+}
+    Ok(map.insert(key, keys))
+}
+
+/// Looks up a key (immutable).
+pub fn get_key_bind(key: &'static str) -> Vec<mirl::platform::KeyCode> {
+    // Clone or copy depending on KeyCode; assuming it is Copy-like
+    KEY_BINDS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(key).cloned()).unwrap_or_default()
+}
+pub fn is_key_bind_down<F:mirl::platform::framework_traits::Framework>(key: &'static str, framework: &F)->bool{
+    let keys = get_key_bind(key);
+    for i in keys.iter(){
+        let key_down = framework.is_key_down(*i);
+        if key_down{
+            return true;
+        }
+    }
+    false
+}
+
+
+
 
 #[inline]
 fn render_block<L: Physics>(
@@ -51,68 +115,67 @@ fn render_block<L: Physics>(
     );
 }
 
-pub fn get_top_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
-    // Is this broken???????
-    // PROBABLY NOT BUT SOMEONE WHO CALLS THIS FUNCTION definitely IS
+
+
+
+pub fn get_top_most_block_idx_or_self(blocks: &[Block], index: usize) -> usize {
     let block = &blocks[index];
-    // if block.connected_top.get().is_some() {
-    //     return block.connected_top.get().unwrap();
-    // }
     if let Some(above_connection) = block.connected_above.get(){
-        return get_top_most_block_id_or_self(blocks, index_by_block_id(&above_connection, blocks).unwrap());
+        if let Some(idx) = index_by_block_id(&above_connection, blocks)
+        {return get_top_most_block_idx_or_self(blocks, idx);}
     }
-    block.id
+    index
 }
 
-pub fn get_bottom_most_block_id_or_self(blocks: &[Block], index: usize) -> ID {
+pub fn get_bottom_most_block_idx_or_self(blocks: &[Block], index: usize) -> usize {
     let block = &blocks[index];
     if let Some(block_below) = block.connected_below.get() {
-        return get_bottom_most_block_id_or_self(
+        if let Some(idx) = index_by_block_id(&block_below, blocks)
+        {return get_bottom_most_block_idx_or_self(
             blocks,
-            index_by_block_id(&block_below, blocks).unwrap(),
-        );
+            idx,
+        );}
     }
-    block.id
+    index
 }
 
-fn handle_connection_and_render_ghost_block<L: Physics>(
+fn handle_connection_and_render_ghost_block<L: Physics, F:Framework>(
     buffer: &Buffer,
-    width: &usize,
-    height: &usize,
     camera: &Camera,
     blocks: &Vec<Block>,
     font: &Font,
     selected: &Option<usize>,
-    snap_distance: f32,
+    snap_distance: SizeType,
     logic: &L,
     block_colors: &[u32],
     selected_type_is_action: bool,
+    framework: &F
 ) {
-    if selected.is_some() {
+    if let Some(selected) = *selected {
         if selected_type_is_action {
             // Connect to block above
             let possible_connection = logic.get_block_in_distance(
                 blocks,
-                blocks[selected.unwrap()].x.get() as f32,
-                blocks[selected.unwrap()].y.get() as f32,
+                blocks[selected].x.get() as SizeType,
+                blocks[selected].y.get() as SizeType,
                 snap_distance,
-                *selected,
+                Some(selected),
                 true,
             );
-            let block = &blocks[selected.unwrap()];
+            let block = &blocks[selected];
             block.possible_connection_above.set(None);
 
-            if possible_connection.is_some() {
-                let above_block = &blocks[possible_connection.unwrap()];
+            if let Some(possible_connection) = possible_connection {
+                let above_block = &blocks[possible_connection];
                 if is_there_a_loop_in_block_connections_for_block_internal(
                     blocks,
-                    get_top_most_block_id_or_self(
+                    get_top_most_block_idx_or_self(
                         blocks,
-                        index_by_block_id(&above_block.id, blocks).unwrap(),
-                    ),
+                        possible_connection,
+                    ).get_id_of_idx(blocks),
                     &mut Vec::from([block.id]),
                 ) {
-                    //framework.log("Loop avoided");
+                    debug("Skipped potential infinite loop!", framework);
                     return;
                 } else {
                     // Save block, only if it is not in a loop
@@ -122,8 +185,8 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
                 if !logic.is_block_visible_on_screen(
                     above_block,
                     camera,
-                    &(*width as isize),
-                    &(*height as isize),
+                    &(buffer.width as isize),
+                    &(buffer.height as isize),
                 ) {
                     return;
                 }
@@ -140,34 +203,29 @@ fn handle_connection_and_render_ghost_block<L: Physics>(
                         ),
                         0.91,
                     ),
-                    *width,
-                    *height,
+                    buffer.width,
+                    buffer.height,
                     font,
                     logic,
                 );
             }
         } else {
-            // println!(
-            //     "{:#?}",
-            //     blocks[selected.unwrap()].get_all_ids_of_all_inputs(blocks)
-            // );
-            let idk = logic.get_block_input_in_distance(
+            let inline_block_connection = logic.get_block_input_in_distance(
                 blocks,
-                blocks[selected.unwrap()].x.get() as f32,
-                blocks[selected.unwrap()].y.get() as f32,
+                blocks[selected].x.get() as SizeType,
+                blocks[selected].y.get() as SizeType,
                 snap_distance,
                 &mirl::lists::combined(
-                    &blocks[selected.unwrap()]
+                    &blocks[selected]
                         .get_all_ids_of_all_inputs(blocks),
-                    blocks[selected.unwrap()].id,
+                    blocks[selected].id,
                 ),
                 true,
             );
 
-            if idk.is_some() {
-                println!("FOUND: {:?}", idk)
+            if inline_block_connection.is_some() {
+                println!("FOUND: {:?}", inline_block_connection)
             }
-            //framework.log("Not implemented")
         }
     }
 }
@@ -225,16 +283,16 @@ fn reorder_element<T>(vec: &mut Vec<T>, from: usize, to: usize) {
 // Block stuff
 fn get_block_id_above<L: Physics>(
     blocks: &Vec<Block>,
-    pos_x: f32,
-    pos_y: f32,
+    pos_x: SizeType,
+    pos_y: SizeType,
     logic: &L,
 ) -> Option<usize> {
     for (block_id, block) in blocks.iter().enumerate() {
         if logic.is_point_in_rectangle(
             pos_x,
             pos_y,
-            block.x.get() as f32,
-            block.y.get() as f32 + block.height.get(),
+            block.x.get() as SizeType,
+            block.y.get() as SizeType + block.height.get(),
             block.width.get(),
             block.height.get(),
         ) {
@@ -292,7 +350,7 @@ fn get_specific_block_id_under_point<L: Physics>(
     None
 }
 /// Add caching to this!!!!
-/// The cache needs to be reset every frame
+/// The cache needs to be reset every frame but it'd definitely be worth it
 #[inline]
 pub fn index_by_block_id(id: &ID, blocks: &[Block]) -> Option<usize> {
     (0..blocks.len()).find(|&block_id| blocks[block_id].id == *id)
@@ -328,13 +386,6 @@ fn is_there_a_loop_in_block_connections_for_block_internal(
             already_checked,
         );
     }
-    // if block.connected_below.get().is_some() {
-    //     return is_there_a_loop_in_block_connections_for_block(
-    //         blocks,
-    //         block.connected_below.get().unwrap(),
-    //         already_checked,
-    //     );
-    // }
     false
 }
 #[inline]
@@ -351,16 +402,14 @@ fn custom_join<T: std::string::ToString>(vector: &Vec<T>, separator: &str) -> St
 }
 
 #[inline]
-fn get_ids_connected_to_block(
+fn get_ids_connected_below_block(
     top_most_block_id: ID,
     blocks: &Vec<Block>,
     found: &mut Vec<ID>,
 ) -> Vec<ID> {
-    // FIX THIS FUNCTION FOR GOD SAKE WHY ARE THERE MULTIPLE IDS??????????????????
     let block = &blocks[index_by_block_id(&top_most_block_id, blocks).unwrap()];
 
     if found.contains(&block.id) {
-        //framework.log("{} -> {}", block.id, block.connected_below.get().unwrap());
         panic!(
             "Infinite loop found with these ids {} with current {} (len({}))",
             custom_join(&found.to_vec(), ", "),
@@ -369,9 +418,9 @@ fn get_ids_connected_to_block(
         )
     }
     found.push(top_most_block_id);
-    if block.connected_below.get().is_some() {
-        let sub = get_ids_connected_to_block(
-            block.connected_below.get().unwrap(),
+    if let Some(connected_below) = block.connected_below.get() {
+        let sub = get_ids_connected_below_block(
+            connected_below,
             blocks,
             found,
         );
@@ -399,23 +448,20 @@ fn index_by_block_ids(
 }
 fn get_total_height_of_blocks(
     blocks: &Vec<Block>,
-    indexes: Vec<Option<usize>>,
-) -> f32 {
-    // For optimization, remove the Option<>
-    let mut height: f32 = 0.0;
+    indexes: Vec<usize>,
+) -> SizeType {
+    let mut height = 0.0;
     for idx in indexes {
-        if idx.is_none() {
-            continue;
-        }
-        let block = &blocks[idx.unwrap()];
+        let block = &blocks[idx];
         height += block.height.get();
     }
     height
 }
 
-fn get_usize_out_of_option_list(list: Vec<Option<usize>>) -> Vec<usize> {
+fn get_object_out_of_option_list<T>(list: Vec<Option<T>>, skip_empty:bool) -> Vec<T> {
     let mut new = Vec::new();
     for l in list {
+        if skip_empty && l.is_none(){continue;}
         new.push(l.unwrap())
     }
     new
@@ -426,14 +472,16 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
         return;
     }
     let block = &blocks[index.unwrap()];
-    let top_block_id = block.connected_top.get();
-    if top_block_id.is_none() {
-        return;
-    }
+    if let Some(top_block_id) = block.connected_top.get(){
+        
+        let idx = match index_by_block_id(&top_block_id, blocks) {
+            Some(value)=>{value}
+            None=>return
+        };
     let top_block =
-        &blocks[index_by_block_id(&top_block_id.unwrap(), blocks).unwrap()];
-    let block_query = get_ids_connected_to_block(
-        top_block_id.unwrap(),
+        &blocks[idx];
+    let block_query = get_ids_connected_below_block(
+        top_block_id,
         blocks,
         &mut Vec::new(),
     );
@@ -490,25 +538,19 @@ fn move_block_to_connected(blocks: &mut Vec<Block>, index: &Option<usize>) {
     let blocks_to_offset_with =
         &block_query[0..own_block_id_index + 1].to_vec();
 
-    //framework.log(">{:?}", block_query);
 
     let total_offset = get_total_height_of_blocks(
         blocks,
-        index_by_block_ids(blocks, blocks_to_offset_with),
+        get_object_out_of_option_list(index_by_block_ids(blocks, blocks_to_offset_with), true),
     );
 
     if block.recently_moved.get() {
         block.x.set(top_block.x.get());
         block.y.set(
-            total_offset as u16 + top_block.y.get() - block.height.get() as u16,
+            total_offset as CoordinateType + top_block.y.get() - block.height.get() as CoordinateType,
         );
         block.recently_moved.set(false);
-    }
-    // blocks[above_block.unwrap()].x.set(blocks[selected.unwrap()].x.get());
-    // blocks[above_block.unwrap()].y.set(
-    //     blocks[selected.unwrap()].y.get()
-    //         + blocks[selected.unwrap()].height.get() as u16,
-    // );
+    }}
 }
 #[inline]
 fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
@@ -520,63 +562,57 @@ fn get_difference_of_values_in_percent(value1: f64, value2: f64) -> f64 {
     }
     ((value2 - value1) / value1).abs() * 100.0
 }
-fn handle_mouse<F: ExtendedFramework<f64>>(
+fn  map_bool_to_sign<T:num_traits::One+ std::ops::Neg<Output = T>>(bool:bool)->T{
+    if bool{
+        T::one()
+    }
+    else{
+        -T::one()
+    }
+}
+
+fn handle_mouse_wheel<F: ExtendedFramework<f64>>(
     camera: &mut Camera,
     framework: &F,
     scroll_multiplier: f64,
+    extra_scroll_multiplier: f64,
+    invert_mouse_x: bool,
+    invert_mouse_y:bool,
+    horizontal_by_default:bool,
 ) {
     // Mouse wheel movement
     let mouse_wheel_temp = framework.get_mouse_scroll();
-    if mouse_wheel_temp.is_some() {
-        let extra_mul =
-            if framework.is_key_down(mirl::platform::KeyCode::RightShift) {
-                10.0
-            } else {
-                1.0
-            };
-        if framework.is_key_down(mirl::platform::KeyCode::LeftControl) {
-            camera.z -= mouse_wheel_temp.unwrap().1 * extra_mul;
-        } else if framework.is_key_down(mirl::platform::KeyCode::LeftShift) {
-            camera.y -= (mouse_wheel_temp.unwrap().0
-                * scroll_multiplier
-                * extra_mul) as isize;
-            camera.x -= (mouse_wheel_temp.unwrap().1
-                * scroll_multiplier
-                * extra_mul) as isize;
+    if let Some(mut mouse_wheel_temp) = mouse_wheel_temp {
+        let mut mul = scroll_multiplier;
+        if horizontal_by_default{
+                mouse_wheel_temp = (mouse_wheel_temp.1, mouse_wheel_temp.0)
+
+        }
+            if is_key_bind_down("horizontal_scroll", framework) {
+                mouse_wheel_temp = (mouse_wheel_temp.1, mouse_wheel_temp.0)
+            }
+            if is_key_bind_down("scroll_multiply", framework)  {
+                mul*=extra_scroll_multiplier
+            }
+
+            
+        if is_key_bind_down("modify_camera_z", framework) {
+            camera.z -= mouse_wheel_temp.1 * mul;
         } else {
-            camera.x -= (mouse_wheel_temp.unwrap().0
-                * scroll_multiplier
-                * extra_mul) as isize;
-            camera.y -= (mouse_wheel_temp.unwrap().1
-                * scroll_multiplier
-                * extra_mul) as isize;
+            camera.x -= -((mouse_wheel_temp.0
+                * mul) as isize*map_bool_to_sign::<isize>(invert_mouse_x));
+            camera.y -= -((mouse_wheel_temp.1
+                * mul) as isize*map_bool_to_sign::<isize>(invert_mouse_y));
         }
     }
 }
 fn reorder_blocks(
-    mouse_down: bool,
     blocks: &mut Vec<Block>,
-    camera: &mut Camera,
-    mouse_delta: (isize, isize),
-    selected: &mut Option<usize>,
+    selected: &mut usize,
 ) {
-    if mouse_down {
-        if let Some(mut idx) = selected {
-            reorder_element(blocks, idx, 0);
-            idx = 0;
-            *selected = Some(0);
-            blocks[idx]
-                .x
-                .set((blocks[idx].x.get() as isize + mouse_delta.0) as u16);
-            blocks[idx]
-                .y
-                .set((blocks[idx].y.get() as isize + mouse_delta.1) as u16);
-        } else {
-            camera.x -= mouse_delta.0;
-            camera.y -= mouse_delta.1;
+            reorder_element(blocks, *selected, 0);
+            *selected = 0;
         }
-    }
-}
 fn handle_mouse_or_get_selected<
     F: mirl::platform::framework_traits::Framework,
     L: Physics,
@@ -622,66 +658,77 @@ fn handle_mouse_or_get_selected<
             *cursor_style = Some(cursors.closed_hand);
             // When this block is selected, disconnect it from the blocks above
             let selected_block = &blocks[selected];
-            selected_block.disconnect_above(blocks);
+            
             // If ctrl is pressed, the structure below should be connected with the structure above
-            if framework.is_key_down(mirl::platform::KeyCode::LeftControl){
+            let disconnect_single = is_key_bind_down("select_single", framework);
+            let duplicate =is_key_bind_down("duplicate", framework);
+            if disconnect_single&&duplicate{
+                // Only copy the singular block
+            }else if duplicate{
+                // Copy entire block structure downwards
+            }
+            else if disconnect_single{
                 selected_block.connect_below_to_above(blocks);
             }else{
-            selected_block.update_topmost(blocks, true);}
+            selected_block.disconnect_above(blocks);
+            selected_block.update_topmost(blocks, true);
+        }
         }
     } else {
         // Connect block previously selected if possible
-        if selected.is_some() {
-            let block = &blocks[selected.unwrap()];
+        if let Some(selected)=selected {
+            let block = &blocks[selected];
             if block.block_type == 1 {
                 return None;
             }
             if block.possible_connection_above.get().is_some() {
-                let connection_id_above =
-                    block.possible_connection_above.get().unwrap();
+                // let connection_id_above =
+                //     block.possible_connection_above.get().unwrap();
 
                 if is_there_a_loop_in_block_connections_for_block_internal(
                     blocks,
-                    get_top_most_block_id_or_self(
+                    get_top_most_block_idx_or_self(
                         blocks,
                         index_by_block_id(
                             &block.possible_connection_above.get().unwrap(),
                             blocks,
                         )
                         .unwrap(),
-                    ),
-                    &mut Vec::from([blocks[selected.unwrap()].id]),
+                    ).get_id_of_idx(blocks),
+                    &mut Vec::from([blocks[selected].id]),
                 ) {
                     panic!("Loop detected in block structure");
                 }
-                // Get above block
-                let block_above_index =
-                    index_by_block_id(&connection_id_above, blocks).unwrap();
-                let above_block = &blocks[block_above_index];
-                if let Some(block_below_above) =
-                    above_block.connected_below.get()
-                {
-                    let self_bottom_most_id = get_bottom_most_block_id_or_self(
-                        blocks,
-                        index_by_block_id(&block.id, blocks).unwrap(),
-                    );
-                    let self_bottom_most = &blocks[index_by_block_id(
-                        &self_bottom_most_id,
-                        blocks,
-                    )
-                    .unwrap()];
-                    self_bottom_most
-                        .connected_below
-                        .set(Some(block_below_above));
-                }
+                block.connect_to_possibly_above(blocks);
+                
+                // // Get above block
+                // let block_above_index =
+                //     index_by_block_id(&connection_id_above, blocks).unwrap();
+                // let above_block = &blocks[block_above_index];
+                // if let Some(block_below_above) =
+                //     above_block.connected_below.get()
+                // {
+                //     let self_bottom_most_id = get_bottom_most_block_id_or_self(
+                //         blocks,
+                //         index_by_block_id(&block.id, blocks).unwrap(),
+                //     );
+                //     let self_bottom_most = &blocks[index_by_block_id(
+                //         &self_bottom_most_id,
+                //         blocks,
+                //     )
+                //     .unwrap()];
+                //     self_bottom_most
+                //         .connected_below
+                //         .set(Some(block_below_above));
+                // }
 
-                // Tell current block to connect above
-                // block.connected_top.set(Some(get_top_most_block_id_or_self(
-                //     blocks,
-                //     block_above_index,
-                // )));
-                block.connected_above.set(Some(above_block.id));
-                above_block.connected_below.set(Some(block.id));
+                // // Tell current block to connect above
+                // // block.connected_top.set(Some(get_top_most_block_id_or_self(
+                // //     blocks,
+                // //     block_above_index,
+                // // )));
+                // block.connected_above.set(Some(above_block.id));
+                // above_block.connected_below.set(Some(block.id));
                 block.update_topmost(blocks, true);
             }
 
@@ -695,79 +742,37 @@ fn handle_mouse_or_get_selected<
     selected
 }
 
-pub fn parse_translations(
-    csv_data: &str,
-    lang: &str,
-) -> Result<Option<(Vec<String>, Vec<String>)>, Box<dyn Error>> {
-    let mut rdr = ReaderBuilder::new()
-        .has_headers(true)
-        .flexible(true) // Add this line to handle uneven rows
-        .from_reader(csv_data.as_bytes());
-
-    let headers = rdr.headers()?.clone();
-    let trimmed_lang = lang.trim();
-    let lang_index = headers.iter().position(|h| h.trim() == trimmed_lang);
-    let key_index = headers.iter().position(|h| h.trim() == "translation_key");
-
-    if let (Some(k_idx), Some(l_idx)) = (key_index, lang_index) {
-        let mut keys = Vec::new();
-        let mut values = Vec::new();
-
-        for result in rdr.records() {
-            let record = result?;
-            keys.push(record.get(k_idx).unwrap_or("").trim().to_string());
-            values.push(record.get(l_idx).unwrap_or("").trim().to_string());
-        }
-
-        Ok(Some((keys, values)))
-    } else {
-        Ok(None)
-    }
-}
-use csv::ReaderBuilder;
-use std::error::Error;
-// pub fn get_length_of_text_in_font(text: &str, font: &Font) -> f32 {
-//     let mut length = 0.0;
-//     for ch in text.chars() {
-//         let (metrics, _) = font.rasterize(ch, 20.0);
-//         length += metrics.advance_width;
-//     }
-//     return length;
-// }
 
 fn load_blocks<F: FileSystem, L: Physics>(
     file_system: &F,
     block_output_types: &mut Vec<String>,
     block_output_colors: &mut Vec<u32>,
-    translation: &mut HashMap<String, String>,
     font: &Font,
     workspace: &mut WorkSpace<L>,
-) -> (Vec<Block>, Vec<Block>) {
+) -> (Vec<Block>, Vec<Block>, HashMap<String, String>) {
     let path = r"C:\personal\games\minecraft\Automated\ender_py\procedures";
     let mut action_blocks = Vec::new();
     let mut inline_blocks = Vec::new();
-
+    let fallback_language = "en";
+    let mut translation = HashMap::new();
     let all_plugin_folders = file_system.get_folders_in_folder(path);
-    //framework.log("{:?}", all_plugin_folders);
+    
+    
     let mut errors: Vec<String> = Vec::new();
     for plugin_folder in all_plugin_folders {
         let plugin_path = file_system.join(path, &plugin_folder);
         let setting_file = file_system.join(&plugin_path, "settings.json");
         let translation_file =
             file_system.join(&plugin_path, "translation.csv");
-        //framework.log("{translation_file}");
+        
+        
         let translation_data =
             file_system.get_file_contents(&translation_file).unwrap();
-        let extracted =
-            parse_translations(&translation_data.as_string().unwrap(), "en")
-                .unwrap()
-                .expect("Could not find language");
+        let (_used_language, parsed_translation) =
+            crate::internal::svg::parse_translations(&translation_data.as_string().unwrap(), fallback_language,fallback_language)
+                .unwrap();
+        translation = parsed_translation;
 
-        for i in 0..extracted.0.len() {
-            translation.insert(extracted.0[i].clone(), extracted.1[i].clone());
-        }
-        // translation_keys.extend(extracted.0);
-        // translation_values.extend(extracted.1);
 
         let settings_json: serde_json::Value = serde_json::from_str(
             &file_system
@@ -898,7 +903,7 @@ fn load_blocks<F: FileSystem, L: Physics>(
                     inputs,
                     block_output_types,
                     font,
-                    workspace,
+                    workspace,None
                 );
                 if inline {
                     inline_blocks.push(block);
@@ -919,7 +924,7 @@ fn load_blocks<F: FileSystem, L: Physics>(
         );
     }
 
-    (action_blocks, inline_blocks)
+    (action_blocks, inline_blocks, translation)
 }
 #[inline]
 pub fn generate_random_color() -> u32 {
@@ -949,9 +954,9 @@ pub fn generate_random_color() -> u32 {
 //     return name;
 // }
 #[inline(always)]
-fn debug(string: &str) {
-    if false {
-        println!("{}", string);
+fn debug(string: &str, framework:&dyn mirl::platform::framework_traits::Framework) {
+    if super::DEBUG {
+        framework.log(string);
     }
 }
 
@@ -972,16 +977,32 @@ pub fn main_loop<
     // render_settings: &S,
     // logic: &L,
     buffer: &Buffer,
-) {
-    debug("Enter - Setting up physics and workspace list");
-    let physics = crate::logic::LogicFast::new();
+)-> Result<(), Box<dyn std::error::Error>> {
+    debug("Setting Default Key-binds", framework);
+    add_key_bind("single_select", mirl::platform::KeyCode::LeftControl)?;
+    add_key_bind("single_select", mirl::platform::KeyCode::RightControl)?;
+    add_key_bind("duplicate", mirl::platform::KeyCode::LeftAlt)?;
+    add_key_bind("duplicate", mirl::platform::KeyCode::RightAlt)?;
+    add_key_bind("debug_block", mirl::platform::KeyCode::I)?;
+    add_key_bind("next_workspace", mirl::platform::KeyCode::Right)?;
+    add_key_bind("previous_workspace", mirl::platform::KeyCode::Left)?;
+    add_key_bind("horizontal_scroll", mirl::platform::KeyCode::LeftShift)?;
+    add_key_bind("scroll_multiply", mirl::platform::KeyCode::RightShift)?;
+    add_key_bind("modify_camera_z", mirl::platform::KeyCode::LeftControl)?;
+    add_key_bind("modify_camera_z", mirl::platform::KeyCode::RightControl)?;
+    
+    
+    debug("Setting up physics and workspace list", framework);
+    let fast_physics = crate::logic::LogicFast::new();
+    let accurate_physics = crate::logic::LogicFast::new();
     let mut workspaces =
-        Vec::from([WorkSpace::new(&physics), WorkSpace::new(&physics)]);
+        Vec::from([WorkSpace::new(&accurate_physics), WorkSpace::new(&fast_physics)]);
+    // : Vec<WorkSpace<'_, dyn Physics>>
     let mut current_workspace_id = 0;
     let workspace_length = workspaces.len();
 
     let mut current_workspace = &mut workspaces[current_workspace_id];
-    debug("Setting window icon");
+    debug("Setting window icon", framework);
     let icon: Buffer = file_system
         .get_file_contents("idk.ico")
         .unwrap()
@@ -991,24 +1012,23 @@ pub fn main_loop<
 
     framework.set_icon(&icon.data, icon.width as u32, icon.height as u32);
 
-    debug("Loading custom cursors");
-    let cursors = framework.load_custom_cursor(
-        U2::new(0),
-        rgb_to_u32(100, 20, 250),
-        rgb_to_u32(80, 30, 240),
-    );
-    // debug("Loading Raw Cursor Inputs");
-    // let raw_mouse_inputs = mirl::platform::mouse::position::RawMouseInput::new(
-    //     framework.get_window_handle(),
-    // )
-    // .unwrap();
 
-    debug("Setting default variables");
-    //framework.log("{:?}", icon.1);
-    //platform::log("Entered main loop");
+    debug("Setting default variables", framework);
+    // Settings - Do touch!
+    // Settings - Modifiable after launch
     let snap_distance = 70.0;
     let scroll_multiplier = 5.0;
+    let extra_scroll_multiplier = 5.0;
     let max_fps = 60;
+    let invert_mouse_wheel_x = false;
+    let invert_mouse_wheel_y = false;
+    let horizontal_mouse_wheel_by_default = false;
+    // Settings - Modifiable before launch
+    let custom_main_cursor_color = (100, 20, 250);
+    let custom_secondary_cursor_color = (80, 30, 240);
+
+    // Setting - Do not touch!
+
     framework.set_target_fps(max_fps);
     //let target_frame_delta = mirl::time::MILLIS_PER_SEC / max_fps; // Time for one frame at the target FPS
     let mut frame_start;
@@ -1023,7 +1043,6 @@ pub fn main_loop<
     let mut mouse_down = false;
     let mut mouse_outside;
 
-    //let mut color_names: Vec<String> = Vec::new();
     let mut block_output_color_rgb: Vec<u32> = Vec::new();
     let mut block_output_color_names: Vec<String> = Vec::new();
 
@@ -1032,80 +1051,60 @@ pub fn main_loop<
     let mut selected: Option<usize> = None;
     let mut selected_type_is_action: bool = false;
 
-    let mut stable_fps: u64;
 
-    let mut last_right_down = false;
-    let mut last_left_down = false;
+    let mut next_workspace_key_down = false;
+    let mut previous_workspace_key_down = false;
 
-    //color_names.push("bool".to_string());
-    // block_output_color_rgb.push(mirl::graphics::rgb_to_u32(50, 80, 255));
-    // block_output_color_names.push("bool".to_string());
-    debug("Loading Font, translations, blocks, and colors");
+    debug("Loading custom cursors", framework);
+    let cursors = framework.load_custom_cursor(
+        U2::new(0),
+        rgb_to_u32(custom_main_cursor_color.0,custom_main_cursor_color.1,custom_main_cursor_color.2),
+        rgb_to_u32(custom_secondary_cursor_color.0,custom_secondary_cursor_color.1,custom_secondary_cursor_color.2),
+    );
+    debug("Loading Font, translations, blocks, and colors", framework);
     let font =
         file_system.get_file_contents("inter.ttf").unwrap().as_font().unwrap();
 
-    let mut translation = HashMap::new();
 
-    let (action_blocks, inline_blocks) = load_blocks(
+    let (action_blocks, inline_blocks, _translation) = load_blocks(
         file_system,
         &mut block_output_color_names,
         &mut block_output_color_rgb,
-        &mut translation,
         &font,
         current_workspace,
     );
     current_workspace.blocks.extend(action_blocks.iter().cloned());
     current_workspace.blocks.extend(inline_blocks.iter().cloned());
 
-    // for id in 0..1000 {
-    //     blocks.push(Block::new(
-    //         format!("new block {}", id + 1),
-    //         getrandom::u32().expect("Unable to generate random color") as i16
-    //             / 1000,
-    //         getrandom::u32().expect("Unable to generate random color") as i16
-    //             / 1000,
-    //         0,
-    //         Vec::new(),
-    //         Vec::new(),
-    //         Vec::new(),
-    //         Vec::new(),
-    //         "bool".to_string(),
-    //         Vec::new(),
-    //         &block_output_color_names,
-    //         &font,
-    //     ))
-    // }
-
-    //platform::log("Starting main loop");
     frame_start = framework.get_time();
 
     while framework.is_open() {
-        debug("Start of loop");
+        debug("Start of loop", framework);
         buffer.clear();
 
         let mut cursor_style: Option<mirl::platform::Cursor> = None;
 
-        debug("Checking for change in workspace");
+        debug("Checking for change in workspace", framework);
         let mut reload_workspace = false;
-        if framework.is_key_down(mirl::platform::KeyCode::Right)
-            && !last_right_down
+        if is_key_bind_down("next_workspace", framework)
+            && !next_workspace_key_down
             && workspace_length > current_workspace_id + 1
         {
             current_workspace_id += 1;
-            last_right_down = true;
+            next_workspace_key_down = true;
             reload_workspace = true
         } else {
-            last_right_down = false
+            next_workspace_key_down = false
         }
-        if framework.is_key_down(mirl::platform::KeyCode::Left)
-            && !last_left_down
+        if is_key_bind_down("previous_workspace", framework)
+            && !previous_workspace_key_down
             && current_workspace_id > 0
         {
             current_workspace_id -= 1;
             reload_workspace = true;
-            last_left_down = true
+            previous_workspace_key_down = true
         } else {
-            last_left_down = false
+            previous_workspace_key_down = false
         }
         if reload_workspace {
             current_workspace = &mut workspaces[current_workspace_id];
@@ -1115,7 +1114,7 @@ pub fn main_loop<
             }
         }
 
-        debug("Getting and handling mouse info");
+        debug("Getting and handling mouse info", framework);
         // Mouse stuff and block(/camera) selection/movement
         mouse_delta = mouse_pos;
         mouse_pos = framework.get_mouse_position().unwrap_or(mouse_pos);
@@ -1158,14 +1157,14 @@ pub fn main_loop<
         mouse_down = framework.is_mouse_down(mirl::platform::MouseButton::Left);
         mouse_held = mouse_down_temp && mouse_down;
 
-        handle_mouse(
+        handle_mouse_wheel(
             &mut current_workspace.camera,
             framework,
-            scroll_multiplier,
+            scroll_multiplier,extra_scroll_multiplier,invert_mouse_wheel_x,invert_mouse_wheel_y,horizontal_mouse_wheel_by_default
         );
 
         if !mouse_outside {
-            debug("Getting new selected");
+            debug("Getting new selected", framework);
             selected = handle_mouse_or_get_selected(
                 mouse_down,
                 mouse_held,
@@ -1199,28 +1198,35 @@ pub fn main_loop<
             //framework.set_cursor_style(&cursors.default);
         }
 
-        // if framework.is_key_down(KeyCode::B) {
-        //     platform::cursor::set_cursor_style_windows(
-        //         handle,
-        //         &platform::shared::CursorStyle::OpenHand,
-        //     );
-        // }
 
         //framework.log("Selected: {:?}, {}", selected, selected_type_is_action);
-        debug("Reordering block structure");
+        debug("Reordering block structure", framework);
+        
+    if mouse_down {
+        if let Some(idx) = &mut selected {
         reorder_blocks(
-            mouse_down,
             &mut current_workspace.blocks,
-            &mut current_workspace.camera,
-            mouse_delta,
-            &mut selected,
+            idx,
         );
+        let selected_block = &mut current_workspace.blocks[0];
+    
+            selected_block.x
+                .set((selected_block.x.get() as isize + mouse_delta.0) as CoordinateType);
+            selected_block.y
+                .set((selected_block.y.get() as isize + mouse_delta.1) as CoordinateType);
+    
+    } else {
+            current_workspace.camera.x -= mouse_delta.0;
+            current_workspace.camera.y -= mouse_delta.1;
+        }
+    }
+
 
         if selected.is_some() && selected.unwrap() != 0 {
             panic!("Selected is not 0 -> Reordering failed?");
         }
         //############################################
-        debug("Handling/Rendering blocks on screen");
+        debug("Handling/Rendering blocks on screen", framework);
         handle_and_render_action_blocks_on_screen(
             buffer,
             &current_workspace.camera,
@@ -1237,11 +1243,9 @@ pub fn main_loop<
         //     &font,
         //     current_workspace.logic,
         // );
-        debug("Handling Connection/Handle Ghost block");
+        debug("Handling Connection/Handle Ghost block", framework);
         handle_connection_and_render_ghost_block(
             buffer,
-            &buffer.width,
-            &buffer.height,
             &current_workspace.camera,
             &current_workspace.blocks,
             &font,
@@ -1249,24 +1253,40 @@ pub fn main_loop<
             snap_distance,
             current_workspace.logic,
             &block_output_color_rgb,
-            selected_type_is_action,
+            selected_type_is_action, framework
         );
 
-        if framework.is_key_down(mirl::platform::KeyCode::I){
+        if is_key_bind_down("debug_block", framework){
+            framework.log("\nINFOS\n");
             if let Some(selected_block_index) = selected{
-                let all_connected = get_ids_connected_to_block(current_workspace.blocks[selected_block_index].id, &current_workspace.blocks, &mut Vec::new());
-                println!("\n\n");
+                let all_connected = get_ids_connected_below_block(current_workspace.blocks[selected_block_index].id, &current_workspace.blocks, &mut Vec::new());
+                
                 for id in all_connected{
-                println!("BLOCK INFOS:\n{:?}", current_workspace.blocks[index_by_block_id(&id, &current_workspace.blocks).unwrap()]);
+                framework.log(&format!("Selected Block info:\n{:#?}", current_workspace.blocks[index_by_block_id(&id, &current_workspace.blocks).unwrap()]));
+
+                }
+            }else if let Some(under_mouse) = get_block_id_under_point(&current_workspace.blocks, mouse_pos.0, mouse_pos.1, current_workspace.logic){
+                let all_connected = get_ids_connected_below_block(current_workspace.blocks[under_mouse].id, &current_workspace.blocks, &mut Vec::new());
+                
+                for id in all_connected{
+                framework.log(&format!("Under Mouse Block info:\n{:#?}", current_workspace.blocks[index_by_block_id(&id, &current_workspace.blocks).unwrap()]));
+
+        }
+            }
+            else
+            {
+                
+                for block in current_workspace.blocks.iter(){
+                framework.log(&format!("All Block info:\n{:#?}", block));
 
                 }
             }
         }
 
         //############################################
-        debug("Update framework with buffer");
+        debug("Update framework with buffer", framework);
         framework.update(buffer);
-        debug("Calculating FPS");
+        debug("Calculating FPS", framework);
         delta_time = frame_start.get_elapsed_time();
         frame_start = framework.get_time();
 
@@ -1275,29 +1295,24 @@ pub fn main_loop<
         } else {
             fps = f64::MAX;
         }
-        let fps_average = fps_list.average().unwrap_or_default();
+        let average_fps = fps_list.average().unwrap_or_default();
 
         add_item_to_max_sized_list(
             &mut fps_list,
-            fps_average as usize,
+            average_fps.max(1) as usize,
             fps as u64,
         );
 
-        if !fps_list.is_empty() {
-            stable_fps = 0;
-        } else {
-            stable_fps = fps_average;
-        }
         if let Some(cursor) = cursor_style {
-            debug("Setting cursors style");
+            debug("Setting cursors style", framework);
             framework.set_cursor_style(&cursor);
         }
 
-        debug("Updating title");
+        debug("Updating title", framework);
         framework.set_title(
             &to_monospace_unicode(&format!(
                 "Rust Window {:>4}/{:>5.0} FPS (Sampling {:>3}) | {:>8}x {:>8}y {:>4}z | {:>8}x {:>8}y -> {:>4} {:>4} -> {:>3} {:>3} | {}A + {}I = {}T",
-                stable_fps,
+                average_fps,
                 fps,
                 fps_list.len(),
                 current_workspace.camera.x,
@@ -1333,8 +1348,9 @@ pub fn main_loop<
         //     // ));
         //     framework.wait(sleep_time);
         // }
-        debug("End of loop");
+        debug("End of loop", framework);
     }
+    Ok(())
 }
 
 fn to_monospace_unicode(input: &str) -> String {

@@ -1,5 +1,7 @@
 // use crate::all::get_length_of_text_in_font;
 
+use crate::SizeType;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockInput {
     input_type: String,
@@ -27,7 +29,7 @@ impl BlockInput {
             literal_return,
         })
     }
-    pub fn get_width(&self, _font: &fontdue::Font) -> f32 {
+    pub fn get_width(&self, _font: &fontdue::Font) -> SizeType {
         if self.block_id.is_none() {
             return 20.0;
         }

@@ -1,39 +1,59 @@
 use fontdue::Font;
 use mirl::extensions::TupleOps;
+use num_traits::ToPrimitive;
 use std::cell::Cell;
-use std::cell::RefCell; // Cell but with & ?
+use std::cell::RefCell;
 
-use crate::all::get_top_most_block_id_or_self;
+use crate::all::get_bottom_most_block_idx_or_self;
+use crate::all::get_top_most_block_idx_or_self;
 use crate::all::index_by_block_id;
-use crate::custom::BlockInput;
-use crate::custom::WorkSpace;
-use crate::custom::ID;
+use crate::internal::id::UsizeGetID;
+use crate::internal::BlockInput;
+use crate::internal::WorkSpace;
+use crate::internal::ID;
 use crate::logic::Physics;
+use crate::CoordinateType;
+use crate::CoordinateTypeSigned;
+use crate::SizeType;
+use mirl::extensions::*;
 
 use derive_more::Debug;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Block {
     #[debug(skip)]
+    /// Name segments -> Split by input
     pub name: Vec<String>,
+    /// Original name of the block
+    pub original_name: String,
+    /// Internal name for file accessing
     pub internal_name: String,
     #[debug("{:?}",x.get())]
-    pub x: Cell<u16>,
+    /// X coordinate
+    pub x: Cell<CoordinateType>,
     #[debug("{:?}",y.get())]
-    pub y: Cell<u16>,
+    /// Y coordinate
+    pub y: Cell<CoordinateType>,
     #[debug("{:?}",width.get())]
-    pub width: Cell<f32>,
+    /// Width
+    pub width: Cell<SizeType>,
     #[debug("{:?}",height.get())]
-    pub height: Cell<f32>,
+    /// Height
+    pub height: Cell<SizeType>,
+    /// 0: Action (Main structure blocks)
+    ///
+    /// 1: Inline (Inputs)
+    ///
+    /// 2: Event (Entry points)
     pub block_type: u8,
-    // 0: Action, 1: Inline, 2: Event
     pub required_imports: Vec<String>,
     pub required_contexts: Vec<String>,
     pub file_versions: Vec<String>,
     pub output: String,
     pub inputs: Vec<BlockInput>,
     #[debug(skip)]
-    pub input_offsets: RefCell<Vec<f32>>,
+    pub input_offsets: RefCell<Vec<SizeType>>,
+    #[debug("{:?}",stored_inputs.borrow())]
     pub stored_inputs: RefCell<Vec<Option<ID>>>,
     #[debug(skip)]
     pub block_color_id: usize,
@@ -52,12 +72,13 @@ pub struct Block {
     #[debug("{:?}", recently_moved.get())]
     pub recently_moved: Cell<bool>,
 }
+use std::ops::Div;
 impl Block {
     pub fn new<L: Physics>(
         name: String,
         internal_name: String,
-        x: i16,
-        y: i16,
+        x: CoordinateTypeSigned,
+        y: CoordinateTypeSigned,
         block_type: u8,
         required_imports: Vec<String>,
         required_contexts: Vec<String>,
@@ -67,17 +88,19 @@ impl Block {
         output_color_names: &[String],
         font: &Font,
         workspace: &mut WorkSpace<L>,
+        overwrite_id: Option<ID>,
     ) -> Block {
         let color_id = output_color_names
             .iter()
             .position(|x| *x == output)
             .expect("Could not find color name");
-        let x = ((u16::MAX / 2) as i16 + x) as u16;
-        let y = ((u16::MAX / 2) as i16 + y) as u16;
+
+        let x = x.map_sign_to_non_sign();
+        let y = y.map_sign_to_non_sign();
 
         if name.matches("{}").count() != inputs.len() {
             panic!(
-                "Name expects {} inputs while an unfitting {} were provided for {} ('{}', '{:?}')",
+                "Translation name expects {} inputs while an unfitting {} were provided to the functions for '{}' \n(Raw name: '{}'\nRaw given inputs: '{:#?}')",
                 name.matches("{}").count(),
                 inputs.len(),
                 internal_name,
@@ -108,6 +131,7 @@ impl Block {
         // }
         let b = Block {
             name: text_between_inputs,
+            original_name: name,
             internal_name,
             x: Cell::new(x),
             y: Cell::new(y),
@@ -122,7 +146,11 @@ impl Block {
             stored_inputs: RefCell::new(stored),
             input_offsets: RefCell::new(input_offsets),
             block_color_id: color_id,
-            id: workspace.increment_block_id().into(),
+            id: if let Some(overwrite_id) = overwrite_id {
+                overwrite_id
+            } else {
+                workspace.increment_block_id().into()
+            },
             connected_top: Cell::new(None),
             connected_above: Cell::new(None),
             connected_below: Cell::new(None),
@@ -135,16 +163,16 @@ impl Block {
         b
     }
     pub fn recalculate_width(&self, font: &Font) {
-        let mut width = 0.0;
+        let mut width: SizeType = 0.0;
         let offset_length = self.input_offsets.borrow().len();
         if offset_length > 0 {
             width += self.input_offsets.borrow()[offset_length - 1];
         }
         width += mirl::render::get_length_of_string(
             &self.name[self.name.len() - 1],
-            self.height.get() / 2.0,
+            self.height.get().div(2.0).to_f32().unwrap(),
             font,
-        );
+        ) as SizeType;
         // Get the last known input offset, add the width of the input, and add the letters after the input
         self.width.set(width);
     }
@@ -158,68 +186,118 @@ impl Block {
             block_below.update_topmost(blocks, true);
         }
     }
+    /// Sets [`connected_below`](Block::connected_below) of [`connected_above`](Block::connected_above) to None
+    ///
+    /// Updates the [`connected_top`](Block::connected_top) of all connected blocks
     pub fn disconnect_above(&self, blocks: &Vec<Block>) {
         if let Some(above) = self.connected_above.get() {
-            let block_above =
-                &blocks[index_by_block_id(&above, blocks).unwrap()];
-            block_above.connected_below.set(None);
-            self.connected_above.set(None);
+            if let Some(idx) = index_by_block_id(&above, blocks) {
+                let block_above = &blocks[idx];
+                block_above.connected_below.set(None);
+                self.connected_above.set(None);
+            }
         }
-        self.connected_top.set(None);
+
+        self.recursive_set_topmost(blocks, self.id, true);
     }
-    pub fn connect_below_to_above(&self, blocks: &Vec<Block>) {
+    pub fn connect_below_to_above(&self, blocks: &Vec<Block>) -> bool {
         if self.connected_above.get().is_none() {
             self.disconnect_below(blocks);
-            return;
+            return false;
         }
         if self.connected_below.get().is_none() {
             self.disconnect_above(blocks);
-            return;
+            return false;
         }
-        let block_above = &blocks[index_by_block_id(
-            &self.connected_above.get().unwrap(),
-            blocks,
-        )
-        .unwrap()];
-        let block_below = &blocks[index_by_block_id(
-            &self.connected_below.get().unwrap(),
-            blocks,
-        )
-        .unwrap()];
+        if let Some(block_idx_above) =
+            index_by_block_id(&self.connected_above.get().unwrap(), blocks)
+        {
+            if let Some(block_idx_below) =
+                index_by_block_id(&self.connected_below.get().unwrap(), blocks)
+            {
+                let block_above = &blocks[block_idx_above];
+                let block_below = &blocks[block_idx_below];
 
-        self.connected_top.set(None);
-        self.connected_above.set(None);
-        self.connected_below.set(None);
-        block_above.connected_below.set(Some(block_below.id));
-        block_below.connected_above.set(Some(block_above.id));
-        block_below.update_topmost(blocks, true);
+                // Disconnect self from all others
+                self.connected_top.set(None);
+                self.connected_above.set(None);
+                self.connected_below.set(None);
+
+                // Update block above
+                block_above.connected_below.set(Some(block_below.id));
+
+                // Update block below
+                block_below.connected_above.set(Some(block_above.id));
+                block_below.update_topmost(blocks, true);
+                return true;
+            }
+        }
+        false
     }
     pub fn update_topmost(&self, blocks: &Vec<Block>, set_moved: bool) {
-        let new_id = get_top_most_block_id_or_self(
+        let new_id = get_top_most_block_idx_or_self(
             blocks,
             index_by_block_id(&self.id, blocks).unwrap(),
         );
-        self.recursive_set_topmost(blocks, new_id, set_moved);
+        self.recursive_set_topmost(
+            blocks,
+            new_id.get_id_of_idx(blocks),
+            set_moved,
+        );
     }
     pub fn recursive_set_topmost(
         &self,
         blocks: &Vec<Block>,
-        id: ID,
+        new_id: ID,
         set_moved: bool,
-    ) {
+    ) -> bool {
         if set_moved {
             self.recently_moved.set(true)
         }
-        if self.id != id {
-            self.connected_top.set(Some(id));
+        if self.id != new_id {
+            self.connected_top.set(Some(new_id));
+        } else {
+            self.connected_top.set(None);
         }
         if let Some(below) = self.connected_below.get() {
-            blocks[index_by_block_id(&below, blocks).unwrap()]
-                .recursive_set_topmost(blocks, id, set_moved);
+            if let Some(below_idx) = index_by_block_id(&below, blocks) {
+                blocks[below_idx]
+                    .recursive_set_topmost(blocks, new_id, set_moved);
+                return true;
+            }
+        }
+        false
+    }
+    pub fn connect_to_block(&self, block_idx: usize, blocks: &Vec<Block>) {
+        let block_above = &blocks[block_idx];
+        let block_below_id = block_above.connected_below.get();
+        block_above.connected_below.set(Some(self.id));
+        self.connected_above.set(Some(block_above.id));
+        self.connected_top.set(block_above.connected_top.get());
+
+        if let Some(block_below_id) = block_below_id {
+            if let Some(block_below_idx) =
+                index_by_block_id(&block_below_id, blocks)
+            {
+                let bottom_most = &blocks[get_bottom_most_block_idx_or_self(
+                    blocks,
+                    index_by_block_id(&self.id, blocks).unwrap(),
+                )];
+                bottom_most.connected_below.set(Some(block_below_id));
+                let block_below = &blocks[block_below_idx];
+                block_below.connected_above.set(Some(self.id))
+            }
+        }
+    }
+    pub fn connect_to_possibly_above(&self, blocks: &Vec<Block>) {
+        if let Some(connection_id) = self.possible_connection_above.get() {
+            if let Some(idx) = index_by_block_id(&connection_id, blocks) {
+                self.connect_to_block(idx, blocks);
+            }
         }
     }
     pub fn recalculate_input_offsets(&self, font: &Font) {
-        let mut offsets = Vec::new();
+        let mut offsets: Vec<SizeType> = Vec::new();
         let mut total_offset = 0.0;
         let loop_amount = self.name.len() - 1;
         offsets.push(total_offset);
@@ -230,9 +308,9 @@ impl Block {
                 // Get length of text
                 total_offset += mirl::render::get_length_of_string(
                     before_text,
-                    self.height.get() / 2.0,
+                    self.height.get().div(2.0).to_f32().unwrap(),
                     font,
-                );
+                ) as SizeType;
                 // Add offset of text
                 offsets.push(total_offset);
                 // Get width of input
@@ -242,7 +320,7 @@ impl Block {
                 // Add offset of input
                 offsets.push(total_offset);
             }
-            // // Add offset of text
+            // Debug check if the right amount of stuff was added
             if offsets.len() != self.name.len() + self.inputs.len() {
                 panic!(
                     "offset {:#?} | {:#?}, {}/{}",
@@ -252,6 +330,7 @@ impl Block {
                     loop_amount * 2
                 );
             }
+            // Add offset of text
             self.input_offsets.swap(&RefCell::new(offsets));
         }
     }
@@ -268,9 +347,9 @@ impl Block {
     }
     pub fn get_inputs_in_range<L: Physics>(
         &self,
-        point: (f32, f32),
-        offset: (f32, f32),
-        range: f32,
+        point: (SizeType, SizeType),
+        offset: (SizeType, SizeType),
+        range: SizeType,
         logic: &L,
         backlist: &[ID],
         blocks: &Vec<Block>,
@@ -281,13 +360,13 @@ impl Block {
         let mut found = Vec::new();
         for i in 0..self.inputs.len() {
             let item = self.input_offsets.borrow()[i * 2];
-            let point_x = self.x.get() as f32 + item;
+            let point_x = self.x.get() as SizeType + item;
             // This checks the corner of the boxes, not the middle
             let distance = logic.get_distance_between_positions(
                 point.0 + offset.0,
                 point.1 + offset.1,
-                point_x,
-                self.y.get() as f32,
+                point_x as SizeType,
+                self.y.get() as SizeType,
             );
             if distance > range {
                 continue;
@@ -339,8 +418,32 @@ impl Block {
             internal_inputs: found,
         }
     }
+    pub fn duplicate<L: Physics>(
+        &self,
+        output_color_names: &[String],
+        font: &Font,
+        workspace: &mut WorkSpace<L>,
+    ) -> Self {
+        Self::new(
+            self.original_name.clone(),
+            self.internal_name.clone(),
+            self.x.get().map_non_sign_to_sign(),
+            self.y.get().map_non_sign_to_sign(),
+            self.block_type,
+            self.required_imports.clone(),
+            self.required_contexts.clone(),
+            self.file_versions.clone(),
+            self.output.clone(),
+            self.inputs.clone(),
+            output_color_names,
+            font,
+            workspace,
+            None,
+        )
+    }
 }
 pub struct InputRememberer {
-    pub internal_inputs: Vec<(usize, Option<InputRememberer>, Option<f32>)>,
+    pub internal_inputs:
+        Vec<(usize, Option<InputRememberer>, Option<SizeType>)>,
     pub own_id: ID,
 }

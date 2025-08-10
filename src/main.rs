@@ -3,18 +3,22 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::type_complexity)]
+#![allow(clippy::unnecessary_cast)]
 
 mod all; // Main loop
-mod custom; // Workspace/Blocks/Camera
+mod internal; // Workspace/Blocks/Camera
 mod logic; // 'Physics'
 use all::main_loop;
 mod idk;
 use mirl::platform::{FileSystem, WindowSettings};
+use mirl::unsigned_to_signed;
 
-//use mirl::platform::framework_traits::Framework;
 use mirl::platform::framework_traits::Window;
 
-// #[cfg(not(target_arch = "wasm32"))]
+const DEBUG: bool = false;
+type CoordinateType = u32;
+type CoordinateTypeSigned = unsigned_to_signed!(u32);
+type SizeType = f32;
 
 fn main() {
     mirl::enable_traceback();
@@ -46,7 +50,7 @@ fn actual_main() {
             "inter.ttf",
         ]))
         .unwrap();
-    main_loop(&mut framework, &file_system, &buffer);
+    main_loop(&mut framework, &file_system, &buffer).unwrap();
 }
 
 // #[cfg(target_arch = "wasm32")]

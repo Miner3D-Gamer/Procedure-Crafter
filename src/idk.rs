@@ -1,7 +1,7 @@
 use fontdue::Font;
 
 use crate::{
-    custom::{Block, Camera},
+    internal::{Block, Camera},
     logic::Physics,
 };
 use mirl::{
@@ -49,7 +49,7 @@ pub fn draw_block<L: Physics>(
                     + block.input_offsets.borrow()[i * 2] as usize,
                 origin_y as usize,
                 mirl::graphics::rgb_to_u32(255, 0, 0),
-                block.height.get() / 2.0,
+                (block.height.get() / 2.0) as f32,
                 font,
                 true,
             );

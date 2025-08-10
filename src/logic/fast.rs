@@ -1,17 +1,15 @@
 use crate::{
-    custom::{block::InputRememberer, Block, Camera, ID},
-    logic::Physics,
+    internal::{Block, Camera, ID},
+    logic::{get_closest_input, Physics},
+    SizeType,
 };
 
 pub struct LogicFast {}
 
-impl LogicFast {
-    pub fn new() -> Self {
+impl Physics for LogicFast {
+    fn new() -> Self {
         LogicFast {}
     }
-}
-
-impl Physics for LogicFast {
     fn is_in_any_hole(
         &self,
         x: isize,
@@ -68,9 +66,9 @@ impl Physics for LogicFast {
     fn get_block_in_distance(
         &self,
         blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
         blacklisted: Option<usize>,
         top: bool,
     ) -> Option<usize> {
@@ -82,11 +80,11 @@ impl Physics for LogicFast {
             let check_x;
             let check_y;
             if top {
-                check_x = block.x.get() as f32;
-                check_y = block.y.get() as f32;
+                check_x = block.x.get() as SizeType;
+                check_y = block.y.get() as SizeType;
             } else {
-                check_x = block.x.get() as f32;
-                check_y = block.y.get() as f32 + block.height.get();
+                check_x = block.x.get() as SizeType;
+                check_y = block.y.get() as SizeType + block.height.get();
             }
             if block.block_type == 0
                 && self.get_distance_between_positions(
@@ -100,11 +98,11 @@ impl Physics for LogicFast {
     }
     fn get_distance_between_positions(
         &self,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-    ) -> f32 {
+        x1: SizeType,
+        y1: SizeType,
+        x2: SizeType,
+        y2: SizeType,
+    ) -> SizeType {
         let dx = (x1 - x2).abs();
         let dy = (y1 - y2).abs();
         dx.max(dy) + 0.41 * dx.min(dy)
@@ -112,13 +110,13 @@ impl Physics for LogicFast {
     fn get_block_input_in_distance(
         &self,
         blocks: &Vec<Block>,
-        pos_x: f32,
-        pos_y: f32,
-        max_distance: f32,
+        pos_x: SizeType,
+        pos_y: SizeType,
+        max_distance: SizeType,
         blacklisted: &[ID],
         _top: bool,
     ) -> Option<Vec<(ID, usize)>> {
-        let mut smallest = f32::MAX;
+        let mut smallest = SizeType::MAX;
         let mut smallest_path = Vec::new();
         for block in blocks {
             if blacklisted.contains(&block.id) {
@@ -133,7 +131,7 @@ impl Physics for LogicFast {
                 blocks,
             );
             if let Some(distance) = distances {
-                let (path, dis) = get_closest(distance);
+                let (path, dis) = get_closest_input(distance);
                 if dis < smallest {
                     smallest_path = path;
                     smallest = dis;
@@ -145,27 +143,4 @@ impl Physics for LogicFast {
         }
         Some(smallest_path)
     }
-}
-fn get_closest(inputs: InputRememberer) -> (Vec<(ID, usize)>, f32) {
-    let mut smallest_path = Vec::new();
-    let mut smallest = f32::MAX;
-
-    for (spot, more, distance) in inputs.internal_inputs {
-        let mut current_path = vec![(inputs.own_id, spot)];
-        let distance = distance.unwrap();
-
-        if let Some(deeper) = more {
-            let (deeper_path, deeper_distance) = get_closest(deeper);
-            if deeper_distance < smallest {
-                current_path.extend(deeper_path);
-                smallest_path = current_path;
-                smallest = deeper_distance;
-            }
-        } else if distance < smallest {
-            smallest = distance;
-            smallest_path = current_path;
-        }
-    }
-
-    (smallest_path, smallest)
 }
